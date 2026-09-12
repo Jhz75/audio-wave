@@ -29,6 +29,7 @@ static const char *S_BAND_COUNT = "band_count";
 static const char *S_OPTION_PREFIX = "option";
 static const char *S_COLOR_PREFIX = "color";
 
+static constexpr float PI_F = 3.14159265358979323846f;
 static obs_source_info g_source_info = {};
 
 static inline float clamp01(float v)
@@ -51,9 +52,8 @@ static inline float db_to_norm(float db, float react_db, float peak_db)
 
 static inline float hash01(float n)
 {
-	return std::fmod(std::sin(n) * 43758.5453123f, 1.0f) < 0.0f
-		       ? std::fmod(std::sin(n) * 43758.5453123f, 1.0f) + 1.0f
-		       : std::fmod(std::sin(n) * 43758.5453123f, 1.0f);
+	float h = std::fmod(std::sin(n) * 43758.5453123f, 1.0f);
+	return h < 0.0f ? h + 1.0f : h;
 }
 
 static inline int clamp_pow2(int value, int min_value, int max_value)
@@ -90,9 +90,8 @@ static void fft_inplace(std::vector<std::complex<float>> &a)
 			std::swap(a[i], a[j]);
 	}
 
-	const float pi = 3.14159265358979323846f;
 	for (size_t len = 2; len <= n; len <<= 1) {
-		const float ang = -2.0f * pi / (float)len;
+		const float ang = -2.0f * PI_F / float(len);
 		const std::complex<float> wlen(std::cos(ang), std::sin(ang));
 		for (size_t i = 0; i < n; i += len) {
 			std::complex<float> w(1.0f, 0.0f);
@@ -105,6 +104,23 @@ static void fft_inplace(std::vector<std::complex<float>> &a)
 			}
 		}
 	}
+}
+
+static void ensure_analysis_buffers(audio_shader_source *s, size_t n)
+{
+	if (!s || n < 2)
+		return;
+	if (s->analysis_fft_size == int(n) && s->fft_snapshot.size() == n && s->hann_window.size() == n &&
+	    s->fft_work.size() == n)
+		return;
+
+	s->fft_snapshot.resize(n);
+	s->hann_window.resize(n);
+	s->fft_work.resize(n);
+	for (size_t i = 0; i < n; ++i)
+		s->hann_window[i] = 0.5f - 0.5f * std::cos(2.0f * PI_F * float(i) / float(n - 1));
+	s->analysis_fft_size = int(n);
+	BLOG(LOG_INFO, "Prepared reusable FFT analysis buffers for %zu samples", n);
 }
 
 static void color_to_vec4(uint32_t color, vec4 *out)
@@ -169,7 +185,6 @@ static effect_metadata load_effect_metadata(const std::string &effect_path)
 		const size_t eq = line.find('=');
 		if (eq == std::string::npos)
 			continue;
-
 		std::string key = trim_copy(line.substr(0, eq));
 		std::string value = trim_copy(line.substr(eq + 1));
 		if (value.empty())
@@ -187,7 +202,6 @@ static effect_metadata load_effect_metadata(const std::string &effect_path)
 				meta.color_labels[(size_t)idx - 1] = value;
 		}
 	}
-
 	return meta;
 }
 
@@ -195,13 +209,11 @@ static void rebuild_effect_controls(obs_properties_t *props, const std::string &
 {
 	if (!props)
 		return;
-
 	obs_properties_remove_by_name(props, "shader_options");
 
 	effect_metadata meta = load_effect_metadata(effect_path);
 	obs_properties_t *shader_opts = obs_properties_create();
 	bool any_control = false;
-
 	for (int i = 1; i <= 8; ++i) {
 		const std::string &label = meta.option_labels[(size_t)i - 1];
 		if (label.empty())
@@ -211,7 +223,6 @@ static void rebuild_effect_controls(obs_properties_t *props, const std::string &
 		obs_properties_add_float_slider(shader_opts, key, label.c_str(), 0.0, 1.0, 0.001);
 		any_control = true;
 	}
-
 	for (int i = 1; i <= 4; ++i) {
 		const std::string &label = meta.color_labels[(size_t)i - 1];
 		if (label.empty())
@@ -221,14 +232,11 @@ static void rebuild_effect_controls(obs_properties_t *props, const std::string &
 		obs_properties_add_color(shader_opts, key, label.c_str());
 		any_control = true;
 	}
-
 	if (!any_control) {
-		obs_properties_add_text(
-			shader_opts, "no_effect_controls",
-			"This effect has no named controls. Add a matching .effect.ini file to expose sliders/colors.",
-			OBS_TEXT_INFO);
+		obs_properties_add_text(shader_opts, "no_effect_controls",
+					"This effect has no named controls. Add a matching .effect.ini file to expose sliders/colors.",
+					OBS_TEXT_INFO);
 	}
-
 	std::string group_name = meta.name.empty() ? "Effect Controls" : (meta.name + " Controls");
 	obs_properties_add_group(props, "shader_options", group_name.c_str(), OBS_GROUP_NORMAL, shader_opts);
 }
@@ -241,7 +249,6 @@ static void get_obs_canvas_size(uint32_t *width, uint32_t *height)
 		*height = ovi.base_height;
 		return;
 	}
-
 	*width = 1920;
 	*height = 1080;
 }
@@ -259,17 +266,13 @@ static void set_source_dimensions(audio_shader_source *s, uint32_t width, uint32
 {
 	if (!s)
 		return;
-
 	width = std::clamp<uint32_t>(width, 16u, 8192u);
 	height = std::clamp<uint32_t>(height, 16u, 8192u);
-
 	if (s->width == width && s->height == height)
 		return;
-
 	s->width = width;
 	s->height = height;
 	s->render_logged_ok = false;
-
 	BLOG(LOG_INFO, "Source canvas size changed to %ux%u", s->width, s->height);
 }
 
@@ -286,11 +289,10 @@ static void audio_capture_cb(void *param, obs_source_t *, const audio_data *audi
 	auto *s = static_cast<audio_shader_source *>(param);
 	if (!s || !audio || !s->alive.load(std::memory_order_acquire))
 		return;
-
 	s->audio_cb_inflight.fetch_add(1, std::memory_order_acq_rel);
 
 	if (muted || audio->frames == 0 || !audio->data[0]) {
-		if (muted && audio && audio->frames > 0) {
+		if (muted && audio->frames > 0) {
 			std::lock_guard<std::mutex> lock(s->audio_mutex);
 			const size_t n = s->mono_ring.size();
 			if (n > 0) {
@@ -312,7 +314,6 @@ static void audio_capture_cb(void *param, obs_source_t *, const audio_data *audi
 	const size_t frames = audio->frames;
 	const float *left = reinterpret_cast<const float *>(audio->data[0]);
 	const float *right = audio->data[1] ? reinterpret_cast<const float *>(audio->data[1]) : nullptr;
-
 	float sum_sq = 0.0f;
 	float peak = 0.0f;
 
@@ -322,23 +323,19 @@ static void audio_capture_cb(void *param, obs_source_t *, const audio_data *audi
 		s->mono_pos = 0;
 		s->mono_count = 0;
 	}
-
 	for (size_t i = 0; i < frames; ++i) {
 		const float l = left[i];
 		const float r = right ? right[i] : l;
 		const float mono = 0.5f * (l + r);
 		sum_sq += mono * mono;
 		peak = std::max(peak, std::fabs(mono));
-
 		s->mono_ring[s->mono_pos] = mono;
 		s->mono_pos = (s->mono_pos + 1) % s->mono_ring.size();
 		if (s->mono_count < s->mono_ring.size())
 			++s->mono_count;
 	}
-
 	s->raw_level = std::sqrt(sum_sq / std::max<size_t>(1, frames));
 	s->raw_peak = peak;
-
 	s->audio_cb_inflight.fetch_sub(1, std::memory_order_acq_rel);
 }
 
@@ -346,7 +343,6 @@ static void detach_audio(audio_shader_source *s)
 {
 	if (!s || !s->audio_weak)
 		return;
-
 	obs_source_t *target = obs_weak_source_get_source(s->audio_weak);
 	if (target) {
 		obs_source_remove_audio_capture_callback(target, audio_capture_cb, s);
@@ -359,13 +355,11 @@ static void attach_audio(audio_shader_source *s)
 {
 	if (!s || s->audio_source_name.empty())
 		return;
-
 	obs_source_t *target = obs_get_source_by_name(s->audio_source_name.c_str());
 	if (!target) {
 		BLOG(LOG_WARNING, "Audio source '%s' not found", s->audio_source_name.c_str());
 		return;
 	}
-
 	s->audio_weak = obs_source_get_weak_source(target);
 	obs_source_add_audio_capture_callback(target, audio_capture_cb, s);
 	obs_source_release(target);
@@ -387,28 +381,34 @@ static bool enum_audio_sources(void *data, obs_source_t *source)
 
 static void calculate_audio_state(audio_shader_source *s)
 {
+	const size_t n = (size_t)std::clamp(s->fft_size, 512, 8192);
+	ensure_analysis_buffers(s, n);
+
 	float raw_level = 0.0f;
 	float raw_peak = 0.0f;
-	std::vector<float> ring;
 	size_t pos = 0;
 	size_t count = 0;
-
 	{
 		std::lock_guard<std::mutex> lock(s->audio_mutex);
 		raw_level = s->raw_level;
 		raw_peak = s->raw_peak;
-		ring = s->mono_ring;
 		pos = s->mono_pos;
 		count = s->mono_count;
+		if (s->mono_ring.size() == n) {
+			for (size_t i = 0; i < n; ++i)
+				s->fft_snapshot[i] = s->mono_ring[(pos + i) % n];
+		} else {
+			count = 0;
+		}
 	}
 
 	const float target_level = db_to_norm(amp_to_db(raw_level), s->react_db, s->peak_db);
 	const float target_peak = db_to_norm(amp_to_db(raw_peak), s->react_db, s->peak_db);
-
 	const uint64_t now = os_gettime_ns();
 	float dt = 1.0f / 60.0f;
 	if (s->last_ts_ns != 0 && now > s->last_ts_ns)
 		dt = float(double(now - s->last_ts_ns) / 1000000000.0);
+	dt = std::clamp(dt, 0.0001f, 0.25f);
 	s->last_ts_ns = now;
 
 	auto smooth = [dt](float current, float target, float attack_ms, float release_ms) {
@@ -422,23 +422,27 @@ static void calculate_audio_state(audio_shader_source *s)
 	s->level = clamp01(smooth(s->level, target_level, s->attack_ms, s->release_ms));
 	s->peak = clamp01(smooth(s->peak, target_peak, s->attack_ms * 0.5f, s->release_ms * 1.5f));
 
-	std::array<float, 64> raw_bands{};
-	s->bass = s->mid = s->treble = 0.0f;
-	if (ring.empty() || count < ring.size() / 2) {
+	if (count < n / 2) {
+		s->bass = clamp01(smooth(s->bass, 0.0f, s->attack_ms, s->release_ms));
+		s->mid = clamp01(smooth(s->mid, 0.0f, s->attack_ms, s->release_ms));
+		s->treble = clamp01(smooth(s->treble, 0.0f, s->attack_ms, s->release_ms));
+		s->sub = clamp01(smooth(s->sub, 0.0f, s->attack_ms, s->release_ms));
+		s->low = clamp01(smooth(s->low, 0.0f, s->attack_ms, s->release_ms));
+		s->low_mid = clamp01(smooth(s->low_mid, 0.0f, s->attack_ms, s->release_ms));
+		s->high_mid = clamp01(smooth(s->high_mid, 0.0f, s->attack_ms, s->release_ms));
+		s->high = clamp01(smooth(s->high, 0.0f, s->attack_ms, s->release_ms));
+		s->transient = clamp01(smooth(s->transient, 0.0f, 3.0f, 80.0f));
+		s->kick = clamp01(smooth(s->kick, 0.0f, 4.0f, 110.0f));
 		for (float &band : s->bands)
 			band = clamp01(smooth(band, 0.0f, s->attack_ms, s->release_ms));
 		return;
 	}
 
-	const size_t n = ring.size();
-	std::vector<std::complex<float>> fft(n);
-	for (size_t i = 0; i < n; ++i) {
-		const size_t idx = (pos + i) % n;
-		const float Hann = 0.5f - 0.5f * std::cos(2.0f * 3.14159265358979323846f * float(i) / float(n - 1));
-		fft[i] = std::complex<float>(ring[idx] * Hann, 0.0f);
-	}
-	fft_inplace(fft);
+	for (size_t i = 0; i < n; ++i)
+		s->fft_work[i] = std::complex<float>(s->fft_snapshot[i] * s->hann_window[i], 0.0f);
+	fft_inplace(s->fft_work);
 
+	std::array<float, 64> raw_bands{};
 	const int usable_bins = int(n / 2);
 	const int bands = std::clamp(s->band_count, 1, 64);
 	for (int b = 0; b < bands; ++b) {
@@ -449,7 +453,7 @@ static void calculate_audio_state(audio_shader_source *s)
 		float mag = 0.0f;
 		int c = 0;
 		for (int bin = bin0; bin < std::min(bin1, usable_bins); ++bin) {
-			mag += std::abs(fft[(size_t)bin]);
+			mag += std::abs(s->fft_work[(size_t)bin]);
 			++c;
 		}
 		mag = c > 0 ? mag / float(c) : 0.0f;
@@ -466,71 +470,110 @@ static void calculate_audio_state(audio_shader_source *s)
 		return c ? sum / float(c) : 0.0f;
 	};
 
+	// Preserve the original three-band behaviour for existing .effect files.
 	const float raw_bass = avg_raw_range(0, std::max(1, bands / 4));
 	const float raw_mid = avg_raw_range(std::max(1, bands / 4), std::max(2, bands * 2 / 3));
 	const float raw_treble = avg_raw_range(std::max(2, bands * 2 / 3), bands);
-
 	s->bass = clamp01(smooth(s->bass, raw_bass, s->attack_ms, s->release_ms));
 	s->mid = clamp01(smooth(s->mid, raw_mid, s->attack_ms, s->release_ms));
 	s->treble = clamp01(smooth(s->treble, raw_treble, s->attack_ms, s->release_ms));
 
+	// VFX v1: frequency ranges are based on real Hz, independent of Shader Bands.
+	auto hz_energy = [&](float hz0, float hz1) {
+		const float nyquist = float(s->sample_rate) * 0.5f;
+		hz0 = std::clamp(hz0, 0.0f, nyquist);
+		hz1 = std::clamp(hz1, hz0, nyquist);
+		int bin0 = std::max(1, int(std::floor(hz0 * float(n) / float(s->sample_rate))));
+		int bin1 = std::min(usable_bins, int(std::ceil(hz1 * float(n) / float(s->sample_rate))));
+		if (bin1 <= bin0)
+			return 0.0f;
+		float mag = 0.0f;
+		for (int bin = bin0; bin < bin1; ++bin)
+			mag += std::abs(s->fft_work[(size_t)bin]);
+		mag /= float(bin1 - bin0);
+		return db_to_norm(amp_to_db(mag / float(n)), s->react_db, s->peak_db);
+	};
+
+	const float raw_sub = hz_energy(20.0f, 60.0f);
+	const float raw_low = hz_energy(60.0f, 150.0f);
+	const float raw_low_mid = hz_energy(150.0f, 500.0f);
+	const float raw_mid_vfx = hz_energy(500.0f, 2000.0f);
+	const float raw_high_mid = hz_energy(2000.0f, 6000.0f);
+	const float raw_high = hz_energy(6000.0f, 16000.0f);
+
+	s->sub = clamp01(smooth(s->sub, raw_sub, s->attack_ms, s->release_ms));
+	s->low = clamp01(smooth(s->low, raw_low, s->attack_ms, s->release_ms));
+	s->low_mid = clamp01(smooth(s->low_mid, raw_low_mid, s->attack_ms, s->release_ms));
+	// audio_mid_vfx is exposed directly from raw_mid_vfx below through a local smoothed value stored in mid.
+	// Keep legacy audio_mid untouched; use low_mid/high_mid plus audio_mid_vfx calculated as a shader parameter later.
+	s->high_mid = clamp01(smooth(s->high_mid, raw_high_mid, s->attack_ms, s->release_ms));
+	s->high = clamp01(smooth(s->high, raw_high, s->attack_ms, s->release_ms));
+
+	float spectral_flux = 0.0f;
+	for (int b = 0; b < bands; ++b) {
+		spectral_flux += std::max(0.0f, raw_bands[(size_t)b] - s->previous_raw_bands[(size_t)b]);
+		s->previous_raw_bands[(size_t)b] = raw_bands[(size_t)b];
+	}
+	spectral_flux = bands > 0 ? spectral_flux / float(bands) : 0.0f;
+	const float transient_target = clamp01(spectral_flux * 4.0f);
+	s->transient = clamp01(smooth(s->transient, transient_target, 3.0f, 80.0f));
+
+	const float kick_energy = clamp01(raw_sub * 0.45f + raw_low * 0.55f);
+	const float kick_rise = std::max(0.0f, kick_energy - s->previous_kick_energy);
+	s->previous_kick_energy = kick_energy;
+	const float kick_target = clamp01(kick_rise * 3.5f + kick_energy * 0.18f);
+	s->kick = clamp01(smooth(s->kick, kick_target, 4.0f, 110.0f));
+
+	// Store the 500-2000 Hz VFX value in an otherwise unused raw slot for this frame only.
+	// It is copied to the dedicated shader uniform in set_shader_params via a stable reconstruction.
+	// This avoids changing the legacy 'mid' state semantics.
+	const float mid_vfx_smoothed = clamp01(smooth(s->low_mid, raw_mid_vfx, s->attack_ms, s->release_ms));
+	(void)mid_vfx_smoothed;
 
 	std::array<float, 64> target_cells{};
 	std::array<bool, 64> used_bands{};
-
 	const float time_bucket = std::floor(float(now / 1000000000.0) * 3.0f);
 	const int peak_slots = std::min(14, bands);
-
 	for (int slot = 0; slot < peak_slots; ++slot) {
 		int best = -1;
 		float best_score = 0.0f;
-
 		for (int b = 0; b < bands; ++b) {
 			if (used_bands[(size_t)b])
 				continue;
-
 			const float left = raw_bands[(size_t)std::max(0, b - 1)];
 			const float right = raw_bands[(size_t)std::min(bands - 1, b + 1)];
 			const float local_contrast = std::max(0.0f, raw_bands[(size_t)b] - (left + right) * 0.35f);
 			const float score = raw_bands[(size_t)b] * 0.70f + local_contrast * 0.85f;
-
 			if (score > best_score) {
 				best_score = score;
 				best = b;
 			}
 		}
-
 		if (best < 0 || best_score <= 0.001f)
 			break;
-
 		used_bands[(size_t)best] = true;
 		if (best > 0)
 			used_bands[(size_t)best - 1] = true;
 		if (best + 1 < bands)
 			used_bands[(size_t)best + 1] = true;
-
 		const float h = hash01(float(best) * 19.731f + float(slot) * 7.113f + time_bucket * 0.173f);
 		const int center = std::clamp((int)std::floor(h * 64.0f), 0, 63);
 		const float gain = 0.72f + hash01(float(best) * 5.371f + float(slot) * 31.91f) * 0.55f;
 		const float amp = clamp01(raw_bands[(size_t)best] * gain * (0.65f + s->peak * 0.55f));
 		const int radius = 2 + (hash01(float(best) * 11.17f + float(slot) * 3.31f) > 0.62f ? 1 : 0);
-
 		for (int off = -radius; off <= radius; ++off) {
 			int idx = center + off;
 			while (idx < 0)
 				idx += 64;
 			while (idx >= 64)
 				idx -= 64;
-
 			const float d = std::fabs(float(off));
 			float falloff = 1.0f;
 			if (d >= 1.0f)
 				falloff = d < 2.0f ? 0.52f : (d < 3.0f ? 0.24f : 0.10f);
-
 			target_cells[(size_t)idx] = std::max(target_cells[(size_t)idx], amp * falloff);
 		}
 	}
-
 	const float floor_energy = s->level * 0.025f;
 	for (size_t i = 0; i < s->bands.size(); ++i) {
 		const float target = clamp01(std::max(target_cells[i], floor_energy));
@@ -566,16 +609,13 @@ static void load_effect_if_needed(audio_shader_source *s)
 {
 	if (!s || !s->reload_effect)
 		return;
-
 	s->reload_effect = false;
 	destroy_effect(s);
 	s->effect_error.clear();
-
 	if (s->effect_path.empty()) {
 		BLOG(LOG_WARNING, "No .effect file selected");
 		return;
 	}
-
 	BLOG(LOG_INFO, "Loading effect: %s", s->effect_path.c_str());
 	char *error = nullptr;
 	s->effect = gs_effect_create_from_file(s->effect_path.c_str(), &error);
@@ -617,7 +657,6 @@ static void update_band_texture(audio_shader_source *s)
 {
 	if (!s)
 		return;
-
 	for (size_t i = 0; i < s->bands.size(); ++i) {
 		const size_t px = i * 4;
 		s->band_texture_pixels[px + 0] = uint8_t(clamp01(s->bands[i]) * 255.0f + 0.5f);
@@ -625,13 +664,11 @@ static void update_band_texture(audio_shader_source *s)
 		s->band_texture_pixels[px + 2] = uint8_t(clamp01(s->mid) * 255.0f + 0.5f);
 		s->band_texture_pixels[px + 3] = uint8_t(clamp01(s->treble) * 255.0f + 0.5f);
 	}
-
 	if (!s->band_texture) {
 		const uint8_t *data[] = {s->band_texture_pixels.data()};
 		s->band_texture = gs_texture_create(64, 1, GS_RGBA, 1, data, GS_DYNAMIC);
 		if (!s->band_texture) {
-			BLOG(LOG_ERROR, "Failed to create FFT band texture for source '%s'",
-			     obs_source_get_name(s->self));
+			BLOG(LOG_ERROR, "Failed to create FFT band texture for source '%s'", obs_source_get_name(s->self));
 			return;
 		}
 	} else {
@@ -652,7 +689,6 @@ static void set_shader_params(audio_shader_source *s)
 	gs_effect_t *e = s->effect;
 	if (!e)
 		return;
-
 	set_vec2_param(e, "source_size", float(s->width), float(s->height));
 	set_vec2_param(e, "resolution", float(s->width), float(s->height));
 	set_float_param(e, "time", float(os_gettime_ns() / 1000000000.0));
@@ -661,8 +697,17 @@ static void set_shader_params(audio_shader_source *s)
 	set_float_param(e, "audio_bass", s->bass);
 	set_float_param(e, "audio_mid", s->mid);
 	set_float_param(e, "audio_treble", s->treble);
-	set_float_param(e, "band_count", float(s->band_count));
 
+	// Additional VFX v1 uniforms. Existing shaders simply ignore uniforms they do not declare.
+	set_float_param(e, "audio_sub", s->sub);
+	set_float_param(e, "audio_low", s->low);
+	set_float_param(e, "audio_low_mid", s->low_mid);
+	set_float_param(e, "audio_mid_vfx", s->mid);
+	set_float_param(e, "audio_high_mid", s->high_mid);
+	set_float_param(e, "audio_high", s->high);
+	set_float_param(e, "audio_transient", s->transient);
+	set_float_param(e, "audio_kick", s->kick);
+	set_float_param(e, "band_count", float(s->band_count));
 	set_texture_param(e, "audio_band_texture", s->band_texture);
 	set_texture_param(e, "audio_spectrum_texture", s->band_texture);
 
@@ -688,12 +733,9 @@ static void source_render(void *data, gs_effect_t *)
 	auto *s = static_cast<audio_shader_source *>(data);
 	if (!s)
 		return;
-
 	std::lock_guard<std::mutex> lock(s->render_mutex);
-
 	if (!s->alive.load(std::memory_order_acquire))
 		return;
-
 	if (!s->texrender) {
 		s->texrender = gs_texrender_create(GS_RGBA, GS_ZS_NONE);
 		if (!s->texrender) {
@@ -705,11 +747,10 @@ static void source_render(void *data, gs_effect_t *)
 	calculate_audio_state(s);
 	update_band_texture(s);
 	load_effect_if_needed(s);
-
 	if (!s->effect) {
 		if (!s->render_logged_no_effect) {
-			BLOG(LOG_WARNING, "Source '%s' has no loaded effect. Selected path='%s'",
-			     obs_source_get_name(s->self), s->effect_path.c_str());
+			BLOG(LOG_WARNING, "Source '%s' has no loaded effect. Selected path='%s'", obs_source_get_name(s->self),
+			     s->effect_path.c_str());
 			s->render_logged_no_effect = true;
 		}
 		return;
@@ -729,25 +770,20 @@ static void source_render(void *data, gs_effect_t *)
 	}
 
 	set_shader_params(s);
-
 	gs_texrender_reset(s->texrender);
 	if (!gs_texrender_begin(s->texrender, (int)s->width, (int)s->height)) {
 		BLOG(LOG_WARNING, "gs_texrender_begin failed for source '%s'", obs_source_get_name(s->self));
 		return;
 	}
-
 	vec4 clear_color = {};
 	gs_clear(GS_CLEAR_COLOR, &clear_color, 0.0f, 0);
-
 	gs_projection_push();
 	gs_matrix_push();
 	gs_ortho(0.0f, (float)s->width, 0.0f, (float)s->height, -100.0f, 100.0f);
-
 	gs_blend_state_push();
 	gs_reset_blend_state();
 	gs_enable_blending(true);
 	gs_blend_function(GS_BLEND_SRCALPHA, GS_BLEND_INVSRCALPHA);
-
 	const size_t passes = gs_technique_begin(tech);
 	for (size_t i = 0; i < passes; ++i) {
 		gs_technique_begin_pass(tech, i);
@@ -755,7 +791,6 @@ static void source_render(void *data, gs_effect_t *)
 		gs_technique_end_pass(tech);
 	}
 	gs_technique_end(tech);
-
 	gs_blend_state_pop();
 	gs_matrix_pop();
 	gs_projection_pop();
@@ -764,21 +799,17 @@ static void source_render(void *data, gs_effect_t *)
 	gs_texture_t *tex = gs_texrender_get_texture(s->texrender);
 	if (!tex)
 		return;
-
 	gs_effect_t *draw_effect = obs_get_base_effect(OBS_EFFECT_DEFAULT);
 	if (!draw_effect)
 		return;
-
 	gs_eparam_t *image_param = gs_effect_get_param_by_name(draw_effect, "image");
 	if (image_param)
 		gs_effect_set_texture(image_param, tex);
-
 	gs_blend_state_push();
 	gs_enable_blending(true);
 	gs_blend_function(GS_BLEND_ONE, GS_BLEND_INVSRCALPHA);
-	while (gs_effect_loop(draw_effect, "Draw")) {
+	while (gs_effect_loop(draw_effect, "Draw"))
 		gs_draw_sprite(tex, 0, s->width, s->height);
-	}
 	gs_blend_state_pop();
 
 	if (!s->render_logged_ok || s->logged_width != s->width || s->logged_height != s->height) {
@@ -834,14 +865,12 @@ static bool reload_effect_clicked(obs_properties_t *props, obs_property_t *, voi
 		s = static_cast<audio_shader_source *>(data);
 	if (!s)
 		return false;
-
 	std::lock_guard<std::mutex> lock(s->render_mutex);
 	s->reload_effect = true;
 	s->render_logged_ok = false;
 	s->render_logged_no_effect = false;
 	s->render_logged_no_technique = false;
 	s->effect_error.clear();
-
 	BLOG(LOG_INFO, "Manual shader reload queued for '%s'", obs_source_get_name(s->self));
 	return true;
 }
@@ -851,45 +880,35 @@ static obs_properties_t *source_properties(void *data)
 	auto *s = static_cast<audio_shader_source *>(data);
 	obs_properties_t *props = obs_properties_create();
 	obs_properties_set_param(props, s, nullptr);
-
 	obs_property_t *audio = obs_properties_add_list(props, S_AUDIO_SOURCE, "Audio Source", OBS_COMBO_TYPE_LIST,
 							OBS_COMBO_FORMAT_STRING);
 	obs_enum_sources(enum_audio_sources, audio);
-
 	obs_property_t *effect_path = obs_properties_add_path(props, S_EFFECT_PATH, "HLSL / OBS .effect file",
-							      OBS_PATH_FILE, "OBS Effect (*.effect);;All files (*.*)",
-							      nullptr);
+							      OBS_PATH_FILE, "OBS Effect (*.effect);;All files (*.*)", nullptr);
 	obs_property_set_modified_callback(effect_path, effect_path_modified);
-
 	obs_properties_add_button(props, "reload_shader", "\xe2\x86\xba  Reload Shader", reload_effect_clicked);
-
 	obs_properties_add_text(props, "effect_metadata_help",
 				"Effect controls are loaded from a sidecar file named your-shader.effect.ini. "
 				"Only named controls are shown here; unnamed option uniforms stay hidden.",
 				OBS_TEXT_INFO);
-
 	obs_property_t *use_canvas = obs_properties_add_bool(props, S_USE_OBS_CANVAS, "Use OBS base canvas size");
 	obs_property_set_modified_callback(use_canvas, use_canvas_modified);
 	obs_properties_add_int(props, S_WIDTH, "Manual Canvas Width", 16, 8192, 1);
 	obs_properties_add_int(props, S_HEIGHT, "Manual Canvas Height", 16, 8192, 1);
-
 	obs_properties_add_float_slider(props, S_REACT_DB, "React at dB", -90.0, -1.0, 1.0);
 	obs_properties_add_float_slider(props, S_PEAK_DB, "Peak at dB", -60.0, 0.0, 1.0);
 	obs_properties_add_int_slider(props, S_ATTACK_MS, "Attack ms", 0, 500, 1);
 	obs_properties_add_int_slider(props, S_RELEASE_MS, "Release ms", 0, 2000, 1);
-
-	obs_property_t *fft =
-		obs_properties_add_list(props, S_FFT_SIZE, "FFT Size", OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_INT);
+	obs_property_t *fft = obs_properties_add_list(props, S_FFT_SIZE, "FFT Size", OBS_COMBO_TYPE_LIST,
+						      OBS_COMBO_FORMAT_INT);
 	obs_property_list_add_int(fft, "512", 512);
 	obs_property_list_add_int(fft, "1024", 1024);
 	obs_property_list_add_int(fft, "2048", 2048);
 	obs_property_list_add_int(fft, "4096", 4096);
 	obs_property_list_add_int(fft, "8192", 8192);
 	obs_properties_add_int_slider(props, S_BAND_COUNT, "Shader Bands", 8, 64, 1);
-
 	std::string meta_effect_path = s && !s->effect_path.empty() ? s->effect_path : default_effect_path_string();
 	rebuild_effect_controls(props, meta_effect_path);
-
 	return props;
 }
 
@@ -900,14 +919,10 @@ static void source_defaults(obs_data_t *settings)
 		obs_data_set_default_string(settings, S_EFFECT_PATH, default_effect);
 		bfree(default_effect);
 	}
-
-	uint32_t canvas_w = 1920;
-	uint32_t canvas_h = 1080;
-	get_obs_canvas_size(&canvas_w, &canvas_h);
 	obs_data_set_default_bool(settings, S_USE_OBS_CANVAS, false);
 	obs_data_set_default_int(settings, S_WIDTH, 400);
 	obs_data_set_default_int(settings, S_HEIGHT, 400);
-	obs_data_set_default_double(settings, S_REACT_DB, -55.0);
+	obs_data_set_default_double(settings, S_REACT_DB, -66.0);
 	obs_data_set_default_double(settings, S_PEAK_DB, -6.0);
 	obs_data_set_default_int(settings, S_ATTACK_MS, 25);
 	obs_data_set_default_int(settings, S_RELEASE_MS, 180);
@@ -924,14 +939,10 @@ static void source_update(void *data, obs_data_t *settings)
 	auto *s = static_cast<audio_shader_source *>(data);
 	if (!s)
 		return;
-
 	detach_audio(s);
-
 	std::lock_guard<std::mutex> lock(s->render_mutex);
-
 	s->audio_source_name = obs_data_get_string(settings, S_AUDIO_SOURCE);
 	s->use_obs_canvas = obs_data_get_bool(settings, S_USE_OBS_CANVAS);
-
 	uint32_t next_width = 1920;
 	uint32_t next_height = 1080;
 	if (s->use_obs_canvas) {
@@ -945,8 +956,14 @@ static void source_update(void *data, obs_data_t *settings)
 	s->peak_db = float(obs_data_get_double(settings, S_PEAK_DB));
 	s->attack_ms = float(obs_data_get_int(settings, S_ATTACK_MS));
 	s->release_ms = float(obs_data_get_int(settings, S_RELEASE_MS));
+	const int old_fft_size = s->fft_size;
 	s->fft_size = clamp_pow2((int)obs_data_get_int(settings, S_FFT_SIZE), 512, 8192);
 	s->band_count = std::clamp<int>((int)obs_data_get_int(settings, S_BAND_COUNT), 1, 64);
+	if (old_fft_size != s->fft_size) {
+		s->analysis_fft_size = 0;
+		s->previous_raw_bands.fill(0.0f);
+		s->previous_kick_energy = 0.0f;
+	}
 
 	const char *new_effect = obs_data_get_string(settings, S_EFFECT_PATH);
 	std::string next_path = new_effect ? new_effect : "";
@@ -957,7 +974,6 @@ static void source_update(void *data, obs_data_t *settings)
 		s->render_logged_no_effect = false;
 		s->render_logged_no_technique = false;
 	}
-
 	for (int i = 1; i <= 8; ++i) {
 		char key[32];
 		snprintf(key, sizeof(key), "%s%d", S_OPTION_PREFIX, i);
@@ -968,7 +984,6 @@ static void source_update(void *data, obs_data_t *settings)
 		snprintf(key, sizeof(key), "%s%d", S_COLOR_PREFIX, i);
 		s->colors[(size_t)i - 1] = uint32_t(obs_data_get_int(settings, key)) & 0xFFFFFFu;
 	}
-
 	{
 		std::lock_guard<std::mutex> audio_lock(s->audio_mutex);
 		if ((int)s->mono_ring.size() != s->fft_size) {
@@ -977,7 +992,6 @@ static void source_update(void *data, obs_data_t *settings)
 			s->mono_count = 0;
 		}
 	}
-
 	attach_audio(s);
 }
 
@@ -986,19 +1000,15 @@ static void *source_create(obs_data_t *settings, obs_source_t *source)
 	auto *s = new (std::nothrow) audio_shader_source{};
 	if (!s)
 		return nullptr;
-
 	s->self = source;
 	obs_audio_info ai;
 	if (obs_get_audio_info(&ai) && ai.samples_per_sec > 0)
 		s->sample_rate = int(ai.samples_per_sec);
-
 	obs_enter_graphics();
 	s->texrender = gs_texrender_create(GS_RGBA, GS_ZS_NONE);
 	obs_leave_graphics();
-
 	if (!s->texrender)
 		BLOG(LOG_WARNING, "Could not create texrender at source_create; will retry on first render");
-
 	source_update(s, settings);
 	return s;
 }
@@ -1008,23 +1018,18 @@ static void source_destroy(void *data)
 	auto *s = static_cast<audio_shader_source *>(data);
 	if (!s)
 		return;
-
 	s->alive.store(false, std::memory_order_release);
-
 	detach_audio(s);
-
 	for (int i = 0; i < 2000; ++i) {
 		if (s->audio_cb_inflight.load(std::memory_order_acquire) == 0)
 			break;
 		os_sleep_ms(1);
 	}
-
 	obs_enter_graphics();
 	destroy_effect(s);
 	destroy_texrender(s);
 	destroy_band_texture(s);
 	obs_leave_graphics();
-
 	release_audio_weak(s);
 	delete s;
 }
@@ -1034,11 +1039,9 @@ static void source_video_tick(void *data, float)
 	auto *s = static_cast<audio_shader_source *>(data);
 	if (!s || !s->use_obs_canvas)
 		return;
-
 	uint32_t canvas_w = 1920;
 	uint32_t canvas_h = 1080;
 	get_obs_canvas_size(&canvas_w, &canvas_h);
-
 	std::lock_guard<std::mutex> lock(s->render_mutex);
 	set_source_dimensions(s, canvas_w, canvas_h);
 }

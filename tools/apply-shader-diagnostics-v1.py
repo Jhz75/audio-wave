@@ -144,3 +144,5 @@ cpp = replace_once(cpp, old_ui, new_ui, "shader status properties")
 CPP.write_text(cpp, encoding="utf-8")
 HPP.write_text(hpp, encoding="utf-8")
 print("Applied shader diagnostics / last-known-good fallback changes")
+
+# Trigger marker: shader diagnostics v1

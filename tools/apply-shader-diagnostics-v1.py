@@ -13,8 +13,6 @@ def replace_once(text, old, new, label):
         raise RuntimeError(f"{label}: expected exactly one match, found {count}")
     return text.replace(old, new, 1)
 
-# Track the actually active shader separately from the selected path. This lets
-# a failed compile keep the last known-good shader running.
 hpp = replace_once(
     hpp,
     "\tstd::string effect_path;\n\tgs_effect_t *effect = nullptr;\n\tstd::string effect_error;\n",
@@ -22,14 +20,10 @@ hpp = replace_once(
     "active shader path state",
 )
 
-# Small formatter for readable OBS property diagnostics.
 needle = "static std::string trim_copy(const std::string &v)\n{\n\tsize_t a = 0;\n\twhile (a < v.size() && std::isspace((unsigned char)v[a]))\n\t\t++a;\n\tsize_t b = v.size();\n\twhile (b > a && std::isspace((unsigned char)v[b - 1]))\n\t\t--b;\n\treturn v.substr(a, b - a);\n}\n"
 replacement = needle + "\nstatic std::string diagnostic_excerpt(std::string text, size_t max_chars = 700)\n{\n\tfor (char &c : text) {\n\t\tif (c == '\\r' || c == '\\n' || c == '\\t')\n\t\t\tc = ' ';\n\t}\n\twhile (text.find(\"  \") != std::string::npos)\n\t\ttext.replace(text.find(\"  \"), 2, \" \" );\n\tif (text.size() > max_chars)\n\t\ttext = text.substr(0, max_chars - 3) + \"...\";\n\treturn text;\n}\n"
 cpp = replace_once(cpp, needle, replacement, "diagnostic excerpt helper")
 
-# Compile into a temporary candidate first. Only replace the active shader when
-# compilation succeeds. A broken edit therefore cannot turn a working source
-# into a black frame.
 old_load = '''static void load_effect_if_needed(audio_shader_source *s)
 {
 \tif (!s || !s->reload_effect)
@@ -100,12 +94,10 @@ new_load = '''static void load_effect_if_needed(audio_shader_source *s)
 '''
 cpp = replace_once(cpp, old_load, new_load, "safe shader candidate compile")
 
-# The render log should identify the effect actually being rendered, not a
-# broken candidate path that failed to replace it.
 cpp = replace_once(
     cpp,
-    "\t\t\t\tBLOG(LOG_ERROR, \"Effect '%s' has no Draw, Solid, or Default technique\", s->effect_path.c_str());\n",
-    "\t\t\t\tBLOG(LOG_ERROR, \"Effect '%s' has no Draw, Solid, or Default technique\", s->active_effect_path.c_str());\n",
+    "\t\t\tBLOG(LOG_ERROR, \"Effect '%s' has no Draw, Solid, or Default technique\", s->effect_path.c_str());\n",
+    "\t\t\tBLOG(LOG_ERROR, \"Effect '%s' has no Draw, Solid, or Default technique\", s->active_effect_path.c_str());\n",
     "active path technique log",
 )
 cpp = replace_once(
@@ -115,7 +107,6 @@ cpp = replace_once(
     "active path render log",
 )
 
-# Add an immediately visible status block when the user opens source properties.
 old_ui = '''\tobs_property_set_modified_callback(effect_path, effect_path_modified);
 \tobs_properties_add_button(props, "reload_shader", "\\xe2\\x86\\xba  Reload Shader", reload_effect_clicked);
 \tobs_properties_add_text(props, "effect_metadata_help",
@@ -144,5 +135,3 @@ cpp = replace_once(cpp, old_ui, new_ui, "shader status properties")
 CPP.write_text(cpp, encoding="utf-8")
 HPP.write_text(hpp, encoding="utf-8")
 print("Applied shader diagnostics / last-known-good fallback changes")
-
-# Trigger marker: shader diagnostics v1

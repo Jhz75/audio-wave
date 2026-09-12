@@ -54,6 +54,7 @@ struct audio_shader_source {
 	float sub = 0.0f;
 	float low = 0.0f;
 	float low_mid = 0.0f;
+	float mid_vfx = 0.0f;
 	float high_mid = 0.0f;
 	float high = 0.0f;
 	float transient = 0.0f;

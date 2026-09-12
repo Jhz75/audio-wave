@@ -36,7 +36,7 @@ struct audio_shader_source {
 	uint32_t logged_width = 0;
 	uint32_t logged_height = 0;
 
-	float react_db = -55.0f;
+	float react_db = -66.0f;
 	float peak_db = -6.0f;
 	float attack_ms = 25.0f;
 	float release_ms = 180.0f;

@@ -144,6 +144,19 @@ static std::string trim_copy(const std::string &v)
 	return v.substr(a, b - a);
 }
 
+static std::string diagnostic_excerpt(std::string text, size_t max_chars = 700)
+{
+	for (char &c : text) {
+		if (c == '\r' || c == '\n' || c == '\t')
+			c = ' ';
+	}
+	while (text.find("  ") != std::string::npos)
+		text.replace(text.find("  "), 2, " " );
+	if (text.size() > max_chars)
+		text = text.substr(0, max_chars - 3) + "...";
+	return text;
+}
+
 struct effect_metadata {
 	std::string name;
 	std::array<std::string, 8> option_labels{};
@@ -641,21 +654,41 @@ static void load_effect_if_needed(audio_shader_source *s)
 	if (!s || !s->reload_effect)
 		return;
 	s->reload_effect = false;
-	destroy_effect(s);
 	s->effect_error.clear();
 	if (s->effect_path.empty()) {
 		BLOG(LOG_WARNING, "No .effect file selected");
+		destroy_effect(s);
+		s->active_effect_path.clear();
 		return;
 	}
-	BLOG(LOG_INFO, "Loading effect: %s", s->effect_path.c_str());
+
+	BLOG(LOG_INFO, "Compiling effect candidate: %s", s->effect_path.c_str());
 	char *error = nullptr;
-	s->effect = gs_effect_create_from_file(s->effect_path.c_str(), &error);
-	if (!s->effect) {
+	gs_effect_t *candidate = gs_effect_create_from_file(s->effect_path.c_str(), &error);
+	if (!candidate) {
 		s->effect_error = error ? error : "Unknown shader compile error";
-		BLOG(LOG_ERROR, "Could not load effect '%s': %s", s->effect_path.c_str(), s->effect_error.c_str());
-	} else {
-		BLOG(LOG_INFO, "Effect loaded successfully: %s", s->effect_path.c_str());
+		const std::string excerpt = diagnostic_excerpt(s->effect_error);
+		if (s->effect) {
+			BLOG(LOG_ERROR,
+			     "Shader compile failed for '%s'; keeping last valid effect '%s' active. Error: %s",
+			     s->effect_path.c_str(), s->active_effect_path.c_str(), excerpt.c_str());
+		} else {
+			BLOG(LOG_ERROR, "Shader compile failed for '%s' and no fallback effect is available. Error: %s",
+			     s->effect_path.c_str(), excerpt.c_str());
+		}
+		if (error)
+			bfree(error);
+		return;
 	}
+
+	destroy_effect(s);
+	s->effect = candidate;
+	s->active_effect_path = s->effect_path;
+	s->effect_error.clear();
+	s->render_logged_ok = false;
+	s->render_logged_no_effect = false;
+	s->render_logged_no_technique = false;
+	BLOG(LOG_INFO, "Effect compiled and activated successfully: %s", s->active_effect_path.c_str());
 	if (error)
 		bfree(error);
 }
@@ -793,7 +826,7 @@ static void source_render(void *data, gs_effect_t *)
 		tech = gs_effect_get_technique(s->effect, "Default");
 	if (!tech) {
 		if (!s->render_logged_no_technique) {
-			BLOG(LOG_ERROR, "Effect '%s' has no Draw, Solid, or Default technique", s->effect_path.c_str());
+			BLOG(LOG_ERROR, "Effect '%s' has no Draw, Solid, or Default technique", s->active_effect_path.c_str());
 			s->render_logged_no_technique = true;
 		}
 		return;
@@ -848,7 +881,7 @@ static void source_render(void *data, gs_effect_t *)
 	    s->logged_render_width != render_width || s->logged_render_height != render_height) {
 		BLOG(LOG_INFO,
 		     "Rendering source '%s' with effect '%s': output=%ux%u internal=%ux%u (%d%%)",
-		     obs_source_get_name(s->self), s->effect_path.c_str(), s->width, s->height, render_width, render_height,
+		     obs_source_get_name(s->self), s->active_effect_path.c_str(), s->width, s->height, render_width, render_height,
 		     s->render_scale_percent);
 		s->render_logged_ok = true;
 		s->logged_width = s->width;
@@ -924,6 +957,21 @@ static obs_properties_t *source_properties(void *data)
 							      OBS_PATH_FILE, "OBS Effect (*.effect);;All files (*.*)", nullptr);
 	obs_property_set_modified_callback(effect_path, effect_path_modified);
 	obs_properties_add_button(props, "reload_shader", "\xe2\x86\xba  Reload Shader", reload_effect_clicked);
+	std::string shader_status;
+	if (!s) {
+		shader_status = "Shader status: source state unavailable";
+	} else if (!s->effect_error.empty()) {
+		shader_status = "Shader status: ERROR - " + diagnostic_excerpt(s->effect_error);
+		if (s->effect && !s->active_effect_path.empty())
+			shader_status += " | Fallback active: " + s->active_effect_path;
+	} else if (s->effect && !s->active_effect_path.empty()) {
+		shader_status = "Shader status: OK | Active: " + s->active_effect_path;
+	} else if (!s->effect_path.empty()) {
+		shader_status = "Shader status: waiting for first compile/reload";
+	} else {
+		shader_status = "Shader status: no effect selected";
+	}
+	obs_properties_add_text(props, "shader_status", shader_status.c_str(), OBS_TEXT_INFO);
 	obs_properties_add_text(props, "effect_metadata_help",
 				"Effect controls are loaded from a sidecar file named your-shader.effect.ini. "
 				"Only named controls are shown here; unnamed option uniforms stay hidden.",

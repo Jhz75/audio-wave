@@ -78,6 +78,7 @@ struct audio_shader_source {
 	std::vector<std::complex<float>> fft_work;
 
 	std::string effect_path;
+	std::string active_effect_path;
 	gs_effect_t *effect = nullptr;
 	std::string effect_error;
 	bool reload_effect = true;

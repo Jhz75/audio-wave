@@ -2,11 +2,12 @@
 
 #include <algorithm>
 #include <cctype>
-#include <cstdlib>
 #include <cmath>
 #include <complex>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <new>
 
 #include <util/platform.h>
 
@@ -62,7 +63,7 @@ static inline int clamp_pow2(int value, int min_value, int max_value)
 	int p = 1;
 	while (p < value)
 		p <<= 1;
-	int lower = p >> 1;
+	const int lower = p >> 1;
 	if (lower < min_value)
 		return p;
 	if (p > max_value)
@@ -429,6 +430,7 @@ static void calculate_audio_state(audio_shader_source *s)
 		s->sub = clamp01(smooth(s->sub, 0.0f, s->attack_ms, s->release_ms));
 		s->low = clamp01(smooth(s->low, 0.0f, s->attack_ms, s->release_ms));
 		s->low_mid = clamp01(smooth(s->low_mid, 0.0f, s->attack_ms, s->release_ms));
+		s->mid_vfx = clamp01(smooth(s->mid_vfx, 0.0f, s->attack_ms, s->release_ms));
 		s->high_mid = clamp01(smooth(s->high_mid, 0.0f, s->attack_ms, s->release_ms));
 		s->high = clamp01(smooth(s->high, 0.0f, s->attack_ms, s->release_ms));
 		s->transient = clamp01(smooth(s->transient, 0.0f, 3.0f, 80.0f));
@@ -470,7 +472,6 @@ static void calculate_audio_state(audio_shader_source *s)
 		return c ? sum / float(c) : 0.0f;
 	};
 
-	// Preserve the original three-band behaviour for existing .effect files.
 	const float raw_bass = avg_raw_range(0, std::max(1, bands / 4));
 	const float raw_mid = avg_raw_range(std::max(1, bands / 4), std::max(2, bands * 2 / 3));
 	const float raw_treble = avg_raw_range(std::max(2, bands * 2 / 3), bands);
@@ -478,13 +479,13 @@ static void calculate_audio_state(audio_shader_source *s)
 	s->mid = clamp01(smooth(s->mid, raw_mid, s->attack_ms, s->release_ms));
 	s->treble = clamp01(smooth(s->treble, raw_treble, s->attack_ms, s->release_ms));
 
-	// VFX v1: frequency ranges are based on real Hz, independent of Shader Bands.
 	auto hz_energy = [&](float hz0, float hz1) {
-		const float nyquist = float(s->sample_rate) * 0.5f;
+		const float sample_rate = float(std::max(1, s->sample_rate));
+		const float nyquist = sample_rate * 0.5f;
 		hz0 = std::clamp(hz0, 0.0f, nyquist);
 		hz1 = std::clamp(hz1, hz0, nyquist);
-		int bin0 = std::max(1, int(std::floor(hz0 * float(n) / float(s->sample_rate))));
-		int bin1 = std::min(usable_bins, int(std::ceil(hz1 * float(n) / float(s->sample_rate))));
+		const int bin0 = std::max(1, int(std::floor(hz0 * float(n) / sample_rate)));
+		const int bin1 = std::min(usable_bins, int(std::ceil(hz1 * float(n) / sample_rate)));
 		if (bin1 <= bin0)
 			return 0.0f;
 		float mag = 0.0f;
@@ -504,8 +505,7 @@ static void calculate_audio_state(audio_shader_source *s)
 	s->sub = clamp01(smooth(s->sub, raw_sub, s->attack_ms, s->release_ms));
 	s->low = clamp01(smooth(s->low, raw_low, s->attack_ms, s->release_ms));
 	s->low_mid = clamp01(smooth(s->low_mid, raw_low_mid, s->attack_ms, s->release_ms));
-	// audio_mid_vfx is exposed directly from raw_mid_vfx below through a local smoothed value stored in mid.
-	// Keep legacy audio_mid untouched; use low_mid/high_mid plus audio_mid_vfx calculated as a shader parameter later.
+	s->mid_vfx = clamp01(smooth(s->mid_vfx, raw_mid_vfx, s->attack_ms, s->release_ms));
 	s->high_mid = clamp01(smooth(s->high_mid, raw_high_mid, s->attack_ms, s->release_ms));
 	s->high = clamp01(smooth(s->high, raw_high, s->attack_ms, s->release_ms));
 
@@ -523,12 +523,6 @@ static void calculate_audio_state(audio_shader_source *s)
 	s->previous_kick_energy = kick_energy;
 	const float kick_target = clamp01(kick_rise * 3.5f + kick_energy * 0.18f);
 	s->kick = clamp01(smooth(s->kick, kick_target, 4.0f, 110.0f));
-
-	// Store the 500-2000 Hz VFX value in an otherwise unused raw slot for this frame only.
-	// It is copied to the dedicated shader uniform in set_shader_params via a stable reconstruction.
-	// This avoids changing the legacy 'mid' state semantics.
-	const float mid_vfx_smoothed = clamp01(smooth(s->low_mid, raw_mid_vfx, s->attack_ms, s->release_ms));
-	(void)mid_vfx_smoothed;
 
 	std::array<float, 64> target_cells{};
 	std::array<bool, 64> used_bands{};
@@ -551,11 +545,13 @@ static void calculate_audio_state(audio_shader_source *s)
 		}
 		if (best < 0 || best_score <= 0.001f)
 			break;
+
 		used_bands[(size_t)best] = true;
 		if (best > 0)
 			used_bands[(size_t)best - 1] = true;
 		if (best + 1 < bands)
 			used_bands[(size_t)best + 1] = true;
+
 		const float h = hash01(float(best) * 19.731f + float(slot) * 7.113f + time_bucket * 0.173f);
 		const int center = std::clamp((int)std::floor(h * 64.0f), 0, 63);
 		const float gain = 0.72f + hash01(float(best) * 5.371f + float(slot) * 31.91f) * 0.55f;
@@ -574,6 +570,7 @@ static void calculate_audio_state(audio_shader_source *s)
 			target_cells[(size_t)idx] = std::max(target_cells[(size_t)idx], amp * falloff);
 		}
 	}
+
 	const float floor_energy = s->level * 0.025f;
 	for (size_t i = 0; i < s->bands.size(); ++i) {
 		const float target = clamp01(std::max(target_cells[i], floor_energy));
@@ -697,12 +694,10 @@ static void set_shader_params(audio_shader_source *s)
 	set_float_param(e, "audio_bass", s->bass);
 	set_float_param(e, "audio_mid", s->mid);
 	set_float_param(e, "audio_treble", s->treble);
-
-	// Additional VFX v1 uniforms. Existing shaders simply ignore uniforms they do not declare.
 	set_float_param(e, "audio_sub", s->sub);
 	set_float_param(e, "audio_low", s->low);
 	set_float_param(e, "audio_low_mid", s->low_mid);
-	set_float_param(e, "audio_mid_vfx", s->mid);
+	set_float_param(e, "audio_mid_vfx", s->mid_vfx);
 	set_float_param(e, "audio_high_mid", s->high_mid);
 	set_float_param(e, "audio_high", s->high);
 	set_float_param(e, "audio_transient", s->transient);
@@ -943,6 +938,7 @@ static void source_update(void *data, obs_data_t *settings)
 	std::lock_guard<std::mutex> lock(s->render_mutex);
 	s->audio_source_name = obs_data_get_string(settings, S_AUDIO_SOURCE);
 	s->use_obs_canvas = obs_data_get_bool(settings, S_USE_OBS_CANVAS);
+
 	uint32_t next_width = 1920;
 	uint32_t next_height = 1080;
 	if (s->use_obs_canvas) {
@@ -956,6 +952,7 @@ static void source_update(void *data, obs_data_t *settings)
 	s->peak_db = float(obs_data_get_double(settings, S_PEAK_DB));
 	s->attack_ms = float(obs_data_get_int(settings, S_ATTACK_MS));
 	s->release_ms = float(obs_data_get_int(settings, S_RELEASE_MS));
+
 	const int old_fft_size = s->fft_size;
 	s->fft_size = clamp_pow2((int)obs_data_get_int(settings, S_FFT_SIZE), 512, 8192);
 	s->band_count = std::clamp<int>((int)obs_data_get_int(settings, S_BAND_COUNT), 1, 64);
@@ -974,6 +971,7 @@ static void source_update(void *data, obs_data_t *settings)
 		s->render_logged_no_effect = false;
 		s->render_logged_no_technique = false;
 	}
+
 	for (int i = 1; i <= 8; ++i) {
 		char key[32];
 		snprintf(key, sizeof(key), "%s%d", S_OPTION_PREFIX, i);
@@ -984,6 +982,7 @@ static void source_update(void *data, obs_data_t *settings)
 		snprintf(key, sizeof(key), "%s%d", S_COLOR_PREFIX, i);
 		s->colors[(size_t)i - 1] = uint32_t(obs_data_get_int(settings, key)) & 0xFFFFFFu;
 	}
+
 	{
 		std::lock_guard<std::mutex> audio_lock(s->audio_mutex);
 		if ((int)s->mono_ring.size() != s->fft_size) {

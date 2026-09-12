@@ -36,10 +36,10 @@ struct audio_shader_source {
 	uint32_t logged_width = 0;
 	uint32_t logged_height = 0;
 
-	float react_db = -66.0f;
-	float peak_db = -6.0f;
-	float attack_ms = 25.0f;
-	float release_ms = 180.0f;
+	float react_db = -82.0f;
+	float peak_db = -28.0f;
+	float attack_ms = 14.0f;
+	float release_ms = 140.0f;
 	uint64_t last_ts_ns = 0;
 
 	float level = 0.0f;
@@ -63,7 +63,7 @@ struct audio_shader_source {
 	std::array<float, 64> previous_raw_bands{};
 	std::array<float, 64> bands{};
 
-	int fft_size = 2048;
+	int fft_size = 4096;
 	int band_count = 64;
 	int sample_rate = 48000;
 

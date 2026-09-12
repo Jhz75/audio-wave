@@ -479,7 +479,7 @@ static void calculate_audio_state(audio_shader_source *s)
 	s->mid = clamp01(smooth(s->mid, raw_mid, s->attack_ms, s->release_ms));
 	s->treble = clamp01(smooth(s->treble, raw_treble, s->attack_ms, s->release_ms));
 
-	auto hz_energy = [&](float hz0, float hz1) {
+	auto hz_db = [&](float hz0, float hz1) {
 		const float sample_rate = float(std::max(1, s->sample_rate));
 		const float nyquist = sample_rate * 0.5f;
 		hz0 = std::clamp(hz0, 0.0f, nyquist);
@@ -487,20 +487,30 @@ static void calculate_audio_state(audio_shader_source *s)
 		const int bin0 = std::max(1, int(std::floor(hz0 * float(n) / sample_rate)));
 		const int bin1 = std::min(usable_bins, int(std::ceil(hz1 * float(n) / sample_rate)));
 		if (bin1 <= bin0)
-			return 0.0f;
+			return -120.0f;
 		float mag = 0.0f;
 		for (int bin = bin0; bin < bin1; ++bin)
 			mag += std::abs(s->fft_work[(size_t)bin]);
 		mag /= float(bin1 - bin0);
-		return db_to_norm(amp_to_db(mag / float(n)), s->react_db, s->peak_db);
+		return amp_to_db(mag / float(n));
 	};
 
-	const float raw_sub = hz_energy(20.0f, 60.0f);
-	const float raw_low = hz_energy(60.0f, 150.0f);
-	const float raw_low_mid = hz_energy(150.0f, 500.0f);
-	const float raw_mid_vfx = hz_energy(500.0f, 2000.0f);
-	const float raw_high_mid = hz_energy(2000.0f, 6000.0f);
-	const float raw_high = hz_energy(6000.0f, 16000.0f);
+	// VFX v1.1 musical calibration. Corrections are applied in dB before
+	// normalization so silence remains exactly at zero and the OBS React/Peak
+	// window keeps its expected meaning.
+	const float sub_db = hz_db(20.0f, 60.0f);
+	const float low_db = hz_db(60.0f, 150.0f);
+	const float low_mid_db = hz_db(150.0f, 500.0f);
+	const float mid_vfx_db = hz_db(500.0f, 2000.0f);
+	const float high_mid_db = hz_db(2000.0f, 6000.0f);
+	const float high_db = hz_db(6000.0f, 16000.0f);
+
+	const float raw_sub = db_to_norm(sub_db - 1.0f, s->react_db, s->peak_db);
+	const float raw_low = db_to_norm(low_db - 2.0f, s->react_db, s->peak_db);
+	const float raw_low_mid = db_to_norm(low_mid_db, s->react_db, s->peak_db);
+	const float raw_mid_vfx = db_to_norm(mid_vfx_db + 1.0f, s->react_db, s->peak_db);
+	const float raw_high_mid = db_to_norm(high_mid_db + 2.0f, s->react_db, s->peak_db);
+	const float raw_high = db_to_norm(high_db + 3.0f, s->react_db, s->peak_db);
 
 	s->sub = clamp01(smooth(s->sub, raw_sub, s->attack_ms, s->release_ms));
 	s->low = clamp01(smooth(s->low, raw_low, s->attack_ms, s->release_ms));
@@ -515,10 +525,14 @@ static void calculate_audio_state(audio_shader_source *s)
 		s->previous_raw_bands[(size_t)b] = raw_bands[(size_t)b];
 	}
 	spectral_flux = bands > 0 ? spectral_flux / float(bands) : 0.0f;
-	const float transient_target = clamp01(spectral_flux * 4.0f);
+	const float transient_target = clamp01(spectral_flux * 6.0f);
 	s->transient = clamp01(smooth(s->transient, transient_target, 3.0f, 80.0f));
 
-	const float kick_energy = clamp01(raw_sub * 0.45f + raw_low * 0.55f);
+	// Keep kick detection on the uncalibrated SUB/LOW response so VFX band
+	// balancing does not change the detector behaviour validated in v1.
+	const float kick_sub = db_to_norm(sub_db, s->react_db, s->peak_db);
+	const float kick_low = db_to_norm(low_db, s->react_db, s->peak_db);
+	const float kick_energy = clamp01(kick_sub * 0.45f + kick_low * 0.55f);
 	const float kick_rise = std::max(0.0f, kick_energy - s->previous_kick_energy);
 	s->previous_kick_energy = kick_energy;
 	const float kick_target = clamp01(kick_rise * 3.5f + kick_energy * 0.18f);
@@ -917,11 +931,11 @@ static void source_defaults(obs_data_t *settings)
 	obs_data_set_default_bool(settings, S_USE_OBS_CANVAS, false);
 	obs_data_set_default_int(settings, S_WIDTH, 400);
 	obs_data_set_default_int(settings, S_HEIGHT, 400);
-	obs_data_set_default_double(settings, S_REACT_DB, -66.0);
-	obs_data_set_default_double(settings, S_PEAK_DB, -6.0);
-	obs_data_set_default_int(settings, S_ATTACK_MS, 25);
-	obs_data_set_default_int(settings, S_RELEASE_MS, 180);
-	obs_data_set_default_int(settings, S_FFT_SIZE, 2048);
+	obs_data_set_default_double(settings, S_REACT_DB, -82.0);
+	obs_data_set_default_double(settings, S_PEAK_DB, -28.0);
+	obs_data_set_default_int(settings, S_ATTACK_MS, 14);
+	obs_data_set_default_int(settings, S_RELEASE_MS, 140);
+	obs_data_set_default_int(settings, S_FFT_SIZE, 4096);
 	obs_data_set_default_int(settings, S_BAND_COUNT, 64);
 	obs_data_set_default_int(settings, "color1", 0xFFFFFF);
 	obs_data_set_default_int(settings, "color2", 0xFFD200);

@@ -91,8 +91,8 @@ struct audio_shader_source {
 	gs_texture_t *band_texture = nullptr;
 	std::array<uint8_t, 64 * 4> band_texture_pixels{};
 
-	std::array<float, 8> options{};
-	std::array<uint32_t, 4> colors{0xFFFFFFu, 0xFFD200u, 0xBB509Du, 0xAC3CFFu};
+	std::array<float, 16> options{};
+	std::array<uint32_t, 8> colors{0xFFFFFFu, 0xFFD200u, 0xBB509Du, 0xAC3CFFu, 0x38D9FFu, 0xFF6B35u, 0x7CFF6Bu, 0x111111u};
 };
 
 extern "C" void register_audio_shader_source(void);

@@ -159,8 +159,8 @@ static std::string diagnostic_excerpt(std::string text, size_t max_chars = 700)
 
 struct effect_metadata {
 	std::string name;
-	std::array<std::string, 8> option_labels{};
-	std::array<std::string, 4> color_labels{};
+	std::array<std::string, 16> option_labels{};
+	std::array<std::string, 8> color_labels{};
 };
 
 static std::string default_effect_path_string()
@@ -209,11 +209,11 @@ static effect_metadata load_effect_metadata(const std::string &effect_path)
 			meta.name = value;
 		} else if (section == "options" && key.rfind("option", 0) == 0) {
 			const int idx = std::atoi(key.c_str() + 6);
-			if (idx >= 1 && idx <= 8 && value.rfind("Custom Option", 0) != 0)
+			if (idx >= 1 && idx <= 16 && value.rfind("Custom Option", 0) != 0)
 				meta.option_labels[(size_t)idx - 1] = value;
 		} else if (section == "colors" && key.rfind("color", 0) == 0) {
 			const int idx = std::atoi(key.c_str() + 5);
-			if (idx >= 1 && idx <= 4)
+			if (idx >= 1 && idx <= 8)
 				meta.color_labels[(size_t)idx - 1] = value;
 		}
 	}
@@ -229,7 +229,7 @@ static void rebuild_effect_controls(obs_properties_t *props, const std::string &
 	effect_metadata meta = load_effect_metadata(effect_path);
 	obs_properties_t *shader_opts = obs_properties_create();
 	bool any_control = false;
-	for (int i = 1; i <= 8; ++i) {
+	for (int i = 1; i <= 16; ++i) {
 		const std::string &label = meta.option_labels[(size_t)i - 1];
 		if (label.empty())
 			continue;
@@ -238,7 +238,7 @@ static void rebuild_effect_controls(obs_properties_t *props, const std::string &
 		obs_properties_add_float_slider(shader_opts, key, label.c_str(), 0.0, 1.0, 0.001);
 		any_control = true;
 	}
-	for (int i = 1; i <= 4; ++i) {
+	for (int i = 1; i <= 8; ++i) {
 		const std::string &label = meta.color_labels[(size_t)i - 1];
 		if (label.empty())
 			continue;
@@ -770,6 +770,20 @@ static void set_shader_params(audio_shader_source *s, uint32_t render_width, uin
 	set_float_param(e, "audio_high", s->high);
 	set_float_param(e, "audio_transient", s->transient);
 	set_float_param(e, "audio_kick", s->kick);
+
+	// VFX v1.4 convenience macro-uniforms. The original calibrated bands stay
+	// available independently; these simply make common mappings faster to author.
+	const float audio_body = clamp01(s->sub * 0.15f + s->low * 0.45f + s->low_mid * 0.40f);
+	const float audio_motion = clamp01(s->low_mid * 0.25f + s->mid_vfx * 0.50f + s->high_mid * 0.25f);
+	const float audio_detail = clamp01(s->high_mid * 0.45f + s->high * 0.55f);
+	const float audio_impact = std::max(s->kick, s->transient);
+	const float audio_energy = clamp01(s->sub * 0.08f + s->low * 0.20f + s->low_mid * 0.22f +
+					 s->mid_vfx * 0.22f + s->high_mid * 0.16f + s->high * 0.12f);
+	set_float_param(e, "audio_body", audio_body);
+	set_float_param(e, "audio_motion", audio_motion);
+	set_float_param(e, "audio_detail", audio_detail);
+	set_float_param(e, "audio_impact", audio_impact);
+	set_float_param(e, "audio_energy", audio_energy);
 	set_float_param(e, "band_count", float(s->band_count));
 	set_texture_param(e, "audio_band_texture", s->band_texture);
 	set_texture_param(e, "audio_spectrum_texture", s->band_texture);
@@ -974,7 +988,7 @@ static obs_properties_t *source_properties(void *data)
 	obs_properties_add_text(props, "shader_status", shader_status.c_str(), OBS_TEXT_INFO);
 	obs_properties_add_text(props, "effect_metadata_help",
 				"Effect controls are loaded from a sidecar file named your-shader.effect.ini. "
-				"Only named controls are shown here; unnamed option uniforms stay hidden.",
+				"Up to 16 named option sliders and 8 named colors can be exposed; unnamed option uniforms stay hidden.",
 				OBS_TEXT_INFO);
 	obs_property_t *use_canvas = obs_properties_add_bool(props, S_USE_OBS_CANVAS, "Use OBS base canvas size");
 	obs_property_set_modified_callback(use_canvas, use_canvas_modified);
@@ -1024,6 +1038,10 @@ static void source_defaults(obs_data_t *settings)
 	obs_data_set_default_int(settings, "color2", 0xFFD200);
 	obs_data_set_default_int(settings, "color3", 0xBB509D);
 	obs_data_set_default_int(settings, "color4", 0xAC3CFF);
+	obs_data_set_default_int(settings, "color5", 0x38D9FF);
+	obs_data_set_default_int(settings, "color6", 0xFF6B35);
+	obs_data_set_default_int(settings, "color7", 0x7CFF6B);
+	obs_data_set_default_int(settings, "color8", 0x111111);
 }
 
 static void source_update(void *data, obs_data_t *settings)
@@ -1074,12 +1092,12 @@ static void source_update(void *data, obs_data_t *settings)
 		s->render_logged_no_technique = false;
 	}
 
-	for (int i = 1; i <= 8; ++i) {
+	for (int i = 1; i <= 16; ++i) {
 		char key[32];
 		snprintf(key, sizeof(key), "%s%d", S_OPTION_PREFIX, i);
 		s->options[(size_t)i - 1] = float(obs_data_get_double(settings, key));
 	}
-	for (int i = 1; i <= 4; ++i) {
+	for (int i = 1; i <= 8; ++i) {
 		char key[32];
 		snprintf(key, sizeof(key), "%s%d", S_COLOR_PREFIX, i);
 		s->colors[(size_t)i - 1] = uint32_t(obs_data_get_int(settings, key)) & 0xFFFFFFu;

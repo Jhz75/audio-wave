@@ -13,3 +13,5 @@ jobs:
   build:
     uses: ./.github/workflows/build-project.yaml
     secrets: inherit
+
+# validation trigger: v1.4 mapping batch

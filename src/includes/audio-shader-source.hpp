@@ -33,8 +33,11 @@ struct audio_shader_source {
 	uint32_t width = 1920;
 	uint32_t height = 1080;
 	bool use_obs_canvas = true;
+	int render_scale_percent = 100;
 	uint32_t logged_width = 0;
 	uint32_t logged_height = 0;
+	uint32_t logged_render_width = 0;
+	uint32_t logged_render_height = 0;
 
 	float react_db = -82.0f;
 	float peak_db = -28.0f;

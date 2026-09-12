@@ -20,6 +20,7 @@ static const char *S_AUDIO_SOURCE = "audio_source";
 static const char *S_WIDTH = "width";
 static const char *S_HEIGHT = "height";
 static const char *S_USE_OBS_CANVAS = "use_obs_canvas";
+static const char *S_RENDER_SCALE = "render_scale";
 static const char *S_EFFECT_PATH = "effect_path";
 static const char *S_REACT_DB = "react_db";
 static const char *S_PEAK_DB = "peak_db";
@@ -261,6 +262,25 @@ static uint32_t valid_dimension(int64_t value, uint32_t fallback)
 	if (value > 8192)
 		return 8192;
 	return static_cast<uint32_t>(value);
+}
+
+static int valid_render_scale(int value)
+{
+	switch (value) {
+	case 25:
+	case 50:
+	case 75:
+	case 100:
+		return value;
+	default:
+		return 100;
+	}
+}
+
+static uint32_t scaled_render_dimension(uint32_t output_dimension, int render_scale_percent)
+{
+	const uint64_t scaled = (uint64_t(output_dimension) * uint64_t(render_scale_percent) + 50u) / 100u;
+	return std::clamp<uint32_t>(uint32_t(scaled), 16u, 8192u);
 }
 
 static void set_source_dimensions(audio_shader_source *s, uint32_t width, uint32_t height)
@@ -695,13 +715,14 @@ static void set_texture_param(gs_effect_t *effect, const char *name, gs_texture_
 		gs_effect_set_texture(p, texture);
 }
 
-static void set_shader_params(audio_shader_source *s)
+static void set_shader_params(audio_shader_source *s, uint32_t render_width, uint32_t render_height)
 {
 	gs_effect_t *e = s->effect;
 	if (!e)
 		return;
 	set_vec2_param(e, "source_size", float(s->width), float(s->height));
-	set_vec2_param(e, "resolution", float(s->width), float(s->height));
+	set_vec2_param(e, "resolution", float(render_width), float(render_height));
+	set_float_param(e, "render_scale", float(s->render_scale_percent) / 100.0f);
 	set_float_param(e, "time", float(os_gettime_ns() / 1000000000.0));
 	set_float_param(e, "audio_level", s->level);
 	set_float_param(e, "audio_peak", s->peak);
@@ -732,9 +753,9 @@ static void set_shader_params(audio_shader_source *s)
 	}
 }
 
-static void draw_fullscreen_quad(audio_shader_source *s)
+static void draw_fullscreen_quad(uint32_t width, uint32_t height)
 {
-	gs_draw_sprite(nullptr, 0, s->width, s->height);
+	gs_draw_sprite(nullptr, 0, width, height);
 }
 
 static void source_render(void *data, gs_effect_t *)
@@ -778,9 +799,11 @@ static void source_render(void *data, gs_effect_t *)
 		return;
 	}
 
-	set_shader_params(s);
+	const uint32_t render_width = scaled_render_dimension(s->width, s->render_scale_percent);
+	const uint32_t render_height = scaled_render_dimension(s->height, s->render_scale_percent);
+	set_shader_params(s, render_width, render_height);
 	gs_texrender_reset(s->texrender);
-	if (!gs_texrender_begin(s->texrender, (int)s->width, (int)s->height)) {
+	if (!gs_texrender_begin(s->texrender, (int)render_width, (int)render_height)) {
 		BLOG(LOG_WARNING, "gs_texrender_begin failed for source '%s'", obs_source_get_name(s->self));
 		return;
 	}
@@ -788,7 +811,7 @@ static void source_render(void *data, gs_effect_t *)
 	gs_clear(GS_CLEAR_COLOR, &clear_color, 0.0f, 0);
 	gs_projection_push();
 	gs_matrix_push();
-	gs_ortho(0.0f, (float)s->width, 0.0f, (float)s->height, -100.0f, 100.0f);
+	gs_ortho(0.0f, (float)render_width, 0.0f, (float)render_height, -100.0f, 100.0f);
 	gs_blend_state_push();
 	gs_reset_blend_state();
 	gs_enable_blending(true);
@@ -796,7 +819,7 @@ static void source_render(void *data, gs_effect_t *)
 	const size_t passes = gs_technique_begin(tech);
 	for (size_t i = 0; i < passes; ++i) {
 		gs_technique_begin_pass(tech, i);
-		draw_fullscreen_quad(s);
+		draw_fullscreen_quad(render_width, render_height);
 		gs_technique_end_pass(tech);
 	}
 	gs_technique_end(tech);
@@ -821,12 +844,17 @@ static void source_render(void *data, gs_effect_t *)
 		gs_draw_sprite(tex, 0, s->width, s->height);
 	gs_blend_state_pop();
 
-	if (!s->render_logged_ok || s->logged_width != s->width || s->logged_height != s->height) {
-		BLOG(LOG_INFO, "Rendering source '%s' with effect '%s' at %ux%u", obs_source_get_name(s->self),
-		     s->effect_path.c_str(), s->width, s->height);
+	if (!s->render_logged_ok || s->logged_width != s->width || s->logged_height != s->height ||
+	    s->logged_render_width != render_width || s->logged_render_height != render_height) {
+		BLOG(LOG_INFO,
+		     "Rendering source '%s' with effect '%s': output=%ux%u internal=%ux%u (%d%%)",
+		     obs_source_get_name(s->self), s->effect_path.c_str(), s->width, s->height, render_width, render_height,
+		     s->render_scale_percent);
 		s->render_logged_ok = true;
 		s->logged_width = s->width;
 		s->logged_height = s->height;
+		s->logged_render_width = render_width;
+		s->logged_render_height = render_height;
 	}
 }
 
@@ -904,6 +932,12 @@ static obs_properties_t *source_properties(void *data)
 	obs_property_set_modified_callback(use_canvas, use_canvas_modified);
 	obs_properties_add_int(props, S_WIDTH, "Manual Canvas Width", 16, 8192, 1);
 	obs_properties_add_int(props, S_HEIGHT, "Manual Canvas Height", 16, 8192, 1);
+	obs_property_t *render_scale = obs_properties_add_list(props, S_RENDER_SCALE, "Internal Render Scale",
+								 OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_INT);
+	obs_property_list_add_int(render_scale, "100% (Full quality)", 100);
+	obs_property_list_add_int(render_scale, "75%", 75);
+	obs_property_list_add_int(render_scale, "50%", 50);
+	obs_property_list_add_int(render_scale, "25% (Maximum performance)", 25);
 	obs_properties_add_float_slider(props, S_REACT_DB, "React at dB", -90.0, -1.0, 1.0);
 	obs_properties_add_float_slider(props, S_PEAK_DB, "Peak at dB", -60.0, 0.0, 1.0);
 	obs_properties_add_int_slider(props, S_ATTACK_MS, "Attack ms", 0, 500, 1);
@@ -931,6 +965,7 @@ static void source_defaults(obs_data_t *settings)
 	obs_data_set_default_bool(settings, S_USE_OBS_CANVAS, false);
 	obs_data_set_default_int(settings, S_WIDTH, 400);
 	obs_data_set_default_int(settings, S_HEIGHT, 400);
+	obs_data_set_default_int(settings, S_RENDER_SCALE, 100);
 	obs_data_set_default_double(settings, S_REACT_DB, -82.0);
 	obs_data_set_default_double(settings, S_PEAK_DB, -28.0);
 	obs_data_set_default_int(settings, S_ATTACK_MS, 14);
@@ -962,6 +997,11 @@ static void source_update(void *data, obs_data_t *settings)
 		next_height = valid_dimension(obs_data_get_int(settings, S_HEIGHT), s->height ? s->height : 1080);
 	}
 	set_source_dimensions(s, next_width, next_height);
+	const int next_render_scale = valid_render_scale((int)obs_data_get_int(settings, S_RENDER_SCALE));
+	if (s->render_scale_percent != next_render_scale) {
+		s->render_scale_percent = next_render_scale;
+		s->render_logged_ok = false;
+	}
 	s->react_db = float(obs_data_get_double(settings, S_REACT_DB));
 	s->peak_db = float(obs_data_get_double(settings, S_PEAK_DB));
 	s->attack_ms = float(obs_data_get_int(settings, S_ATTACK_MS));

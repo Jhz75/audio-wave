@@ -1,0 +1,43 @@
+name: Apply VFX v1.1 calibration
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - audio-wave-vfx-v1
+    paths:
+      - tools/apply-vfx-v1-1-calibration.py
+      - .github/workflows/vfx-v1-1-calibration-apply.yaml
+
+permissions:
+  contents: write
+
+jobs:
+  apply-calibration:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out branch
+        uses: actions/checkout@v4
+        with:
+          ref: audio-wave-vfx-v1
+          fetch-depth: 0
+
+      - name: Apply guarded calibration patch
+        run: python3 tools/apply-vfx-v1-1-calibration.py
+
+      - name: Validate patch whitespace
+        run: git diff --check
+
+      - name: Commit calibrated engine source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/audio-shader-source.cpp src/includes/audio-shader-source.hpp
+          if git diff --cached --quiet; then
+            echo "No source changes to commit."
+            exit 0
+          fi
+          git commit -m "Calibrate VFX v1.1 musical analysis"
+          git push origin HEAD:audio-wave-vfx-v1

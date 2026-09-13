@@ -708,6 +708,13 @@ static void calculate_audio_state(audio_shader_source *s)
 	const float kick_target = clamp01(kick_rise * 3.5f + kick_energy * 0.18f);
 	s->kick = clamp01(smooth(s->kick, kick_target, 4.0f, 110.0f));
 
+	// VFX v1.7 independent BEAT envelope. This is intentionally decoupled from
+	// the user-facing Attack/Release controls used by the continuous bands.
+	// It follows the positive SUB/LOW rise with a very short decay, so shaders
+	// can create a true heartbeat/punch without freezing the rest of the motion.
+	const float beat_target = clamp01(kick_rise * 5.0f + transient_target * 0.10f);
+	s->beat = clamp01(smooth(s->beat, beat_target, 6.0f, 45.0f));
+
 	std::array<float, 64> target_cells{};
 	std::array<bool, 64> used_bands{};
 	const float time_bucket = std::floor(float(now / 1000000000.0) * 3.0f);
@@ -907,6 +914,7 @@ static void set_shader_params(audio_shader_source *s, uint32_t render_width, uin
 	set_float_param(e, "audio_high", s->high);
 	set_float_param(e, "audio_transient", s->transient);
 	set_float_param(e, "audio_kick", s->kick);
+	set_float_param(e, "audio_beat", s->beat);
 
 	// VFX v1.5 musical macro-uniforms. These are genre-neutral building blocks
 	// tuned for dense electronic music (shranz / hardgroove / industrial / bochka).

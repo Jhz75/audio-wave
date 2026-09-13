@@ -605,6 +605,10 @@ static void calculate_audio_state(audio_shader_source *s)
 		s->high = clamp01(smooth(s->high, 0.0f, s->attack_ms, s->release_ms));
 		s->transient = clamp01(smooth(s->transient, 0.0f, 3.0f, 80.0f));
 		s->kick = clamp01(smooth(s->kick, 0.0f, 4.0f, 110.0f));
+		s->beat = clamp01(smooth(s->beat, 0.0f, 5.0f, 52.0f));
+		s->beat_floor = 0.0f;
+		s->previous_beat_focus = 0.0f;
+		s->beat_refractory = 0.0f;
 		for (float &band : s->bands)
 			band = clamp01(smooth(band, 0.0f, s->attack_ms, s->release_ms));
 		return;
@@ -708,12 +712,28 @@ static void calculate_audio_state(audio_shader_source *s)
 	const float kick_target = clamp01(kick_rise * 3.5f + kick_energy * 0.18f);
 	s->kick = clamp01(smooth(s->kick, kick_target, 4.0f, 110.0f));
 
-	// VFX v1.7 independent BEAT envelope. This is intentionally decoupled from
-	// the user-facing Attack/Release controls used by the continuous bands.
-	// It follows the positive SUB/LOW rise with a very short decay, so shaders
-	// can create a true heartbeat/punch without freezing the rest of the motion.
-	const float beat_target = clamp01(kick_rise * 5.0f + transient_target * 0.10f);
-	s->beat = clamp01(smooth(s->beat, beat_target, 6.0f, 45.0f));
+	// VFX v1.8 isolated BEAT detector. Unlike v1.7, this does not use the broad
+	// 20-150 Hz SUB/LOW energy or the full-spectrum transient detector. It focuses
+	// on 35-105 Hz, compares the instantaneous energy with a slowly adapting
+	// background floor, and uses a short refractory period to reject rumble tails
+	// and double triggers. The output envelope remains independent of the user's
+	// global Attack/Release controls.
+	const float beat_focus_db = hz_db(35.0f, 105.0f);
+	const float beat_focus = db_to_norm(beat_focus_db, s->react_db, s->peak_db);
+	const float beat_floor_tau = beat_focus > s->beat_floor ? 320.0f : 780.0f;
+	s->beat_floor = clamp01(smooth(s->beat_floor, beat_focus, beat_floor_tau, beat_floor_tau));
+	const float beat_rise = std::max(0.0f, beat_focus - s->previous_beat_focus);
+	const float beat_above_floor = std::max(0.0f, beat_focus - s->beat_floor);
+	s->previous_beat_focus = beat_focus;
+	s->beat_refractory = std::max(0.0f, s->beat_refractory - dt);
+
+	const float beat_score = beat_rise * 3.9f + beat_above_floor * 1.55f;
+	float beat_trigger = 0.0f;
+	if (s->beat_refractory <= 0.0f && beat_focus > 0.16f && beat_score > 0.20f) {
+		beat_trigger = clamp01((beat_score - 0.16f) * 2.8f);
+		s->beat_refractory = 0.115f;
+	}
+	s->beat = clamp01(smooth(s->beat, beat_trigger, 5.0f, 52.0f));
 
 	std::array<float, 64> target_cells{};
 	std::array<bool, 64> used_bands{};

@@ -62,7 +62,10 @@ struct audio_shader_source {
 	float high = 0.0f;
 	float transient = 0.0f;
 	float kick = 0.0f;
-	float beat = 0.0f; // VFX v1.7 independent short beat envelope
+	float beat = 0.0f; // VFX v1.8 isolated short beat envelope
+	float beat_floor = 0.0f;
+	float previous_beat_focus = 0.0f;
+	float beat_refractory = 0.0f;
 	float previous_kick_energy = 0.0f;
 	std::array<float, 64> previous_raw_bands{};
 	std::array<float, 64> bands{};

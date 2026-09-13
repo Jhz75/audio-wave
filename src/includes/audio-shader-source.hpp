@@ -2,6 +2,7 @@
 
 #include <obs-module.h>
 #include <graphics/graphics.h>
+#include <graphics/image-file.h>
 
 #include <atomic>
 #include <array>
@@ -95,6 +96,21 @@ struct audio_shader_source {
 
 	gs_texture_t *band_texture = nullptr;
 	std::array<uint8_t, 64 * 4> band_texture_pixels{};
+
+	// VFX Material Engine v2. Six optional 2D texture slots are loaded by the
+	// plugin and exposed to compatible .effect shaders. Existing shaders simply
+	// ignore these uniforms and remain fully backward compatible.
+	std::array<std::string, 6> material_texture_paths{};
+	std::array<gs_image_file_t, 6> material_images{};
+	std::array<bool, 6> material_image_initialized{};
+	bool reload_material_textures = true;
+	int material_quality = 1; // 0=LIVE, 1=HIGH, 2=ULTRA
+	float material_normal_strength = 1.0f;
+	float material_height_strength = 0.35f;
+	float material_environment_strength = 1.0f;
+	float material_roughness = 0.22f;
+	float material_metallic = 1.0f;
+	float material_triplanar_scale = 2.5f;
 
 	std::array<float, 16> options{};
 	std::array<uint32_t, 8> colors{0xFFFFFFu, 0xFFD200u, 0xBB509Du, 0xAC3CFFu, 0x38D9FFu, 0xFF6B35u, 0x7CFF6Bu, 0x111111u};

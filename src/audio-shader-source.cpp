@@ -31,6 +31,33 @@ static const char *S_BAND_COUNT = "band_count";
 static const char *S_OPTION_PREFIX = "option";
 static const char *S_COLOR_PREFIX = "color";
 
+// VFX Material Engine v2 settings.
+static const char *S_MAT_ALBEDO = "material_albedo_path";
+static const char *S_MAT_NORMAL = "material_normal_path";
+static const char *S_MAT_ROUGHNESS = "material_roughness_path";
+static const char *S_MAT_METALLIC = "material_metallic_path";
+static const char *S_MAT_HEIGHT = "material_height_path";
+static const char *S_MAT_ENVIRONMENT = "material_environment_path";
+static const char *S_MAT_QUALITY = "material_quality";
+static const char *S_MAT_NORMAL_STRENGTH = "material_normal_strength";
+static const char *S_MAT_HEIGHT_STRENGTH = "material_height_strength";
+static const char *S_MAT_ENV_STRENGTH = "material_environment_strength";
+static const char *S_MAT_ROUGHNESS_VALUE = "material_roughness";
+static const char *S_MAT_METALLIC_VALUE = "material_metallic";
+static const char *S_MAT_TRIPLANAR_SCALE = "material_triplanar_scale";
+
+static const std::array<const char *, 6> kMaterialPathKeys = {
+	S_MAT_ALBEDO, S_MAT_NORMAL, S_MAT_ROUGHNESS, S_MAT_METALLIC, S_MAT_HEIGHT, S_MAT_ENVIRONMENT};
+static const std::array<const char *, 6> kMaterialUniformNames = {
+	"material_albedo_texture", "material_normal_texture", "material_roughness_texture",
+	"material_metallic_texture", "material_height_texture", "material_environment_texture"};
+static const std::array<const char *, 6> kMaterialHasUniformNames = {
+	"material_has_albedo", "material_has_normal", "material_has_roughness",
+	"material_has_metallic", "material_has_height", "material_has_environment"};
+static const std::array<const char *, 6> kMaterialSizeUniformNames = {
+	"material_albedo_size", "material_normal_size", "material_roughness_size",
+	"material_metallic_size", "material_height_size", "material_environment_size"};
+
 static constexpr float PI_F = 3.14159265358979323846f;
 static obs_source_info g_source_info = {};
 
@@ -813,6 +840,59 @@ static void destroy_band_texture(audio_shader_source *s)
 	}
 }
 
+static void destroy_material_texture(audio_shader_source *s, size_t index)
+{
+	if (!s || index >= s->material_images.size() || !s->material_image_initialized[index])
+		return;
+	gs_image_file_free(&s->material_images[index]);
+	std::memset(&s->material_images[index], 0, sizeof(gs_image_file_t));
+	s->material_image_initialized[index] = false;
+}
+
+static void destroy_material_textures(audio_shader_source *s)
+{
+	if (!s)
+		return;
+	for (size_t i = 0; i < s->material_images.size(); ++i)
+		destroy_material_texture(s, i);
+}
+
+static void load_material_textures_if_needed(audio_shader_source *s)
+{
+	if (!s || !s->reload_material_textures)
+		return;
+
+	s->reload_material_textures = false;
+	for (size_t i = 0; i < s->material_images.size(); ++i) {
+		destroy_material_texture(s, i);
+		const std::string &path = s->material_texture_paths[i];
+		if (path.empty())
+			continue;
+
+		gs_image_file_init(&s->material_images[i], path.c_str());
+		s->material_image_initialized[i] = true;
+		if (!s->material_images[i].loaded) {
+			BLOG(LOG_WARNING, "Material texture %zu failed to load: %s", i + 1, path.c_str());
+			continue;
+		}
+		gs_image_file_init_texture(&s->material_images[i]);
+		if (!s->material_images[i].texture) {
+			BLOG(LOG_WARNING, "Material texture %zu loaded but GPU texture creation failed: %s", i + 1,
+			     path.c_str());
+			continue;
+		}
+		BLOG(LOG_INFO, "Material texture %zu ready: %s (%ux%u)", i + 1, path.c_str(),
+		     s->material_images[i].cx, s->material_images[i].cy);
+	}
+}
+
+static gs_texture_t *material_texture(const audio_shader_source *s, size_t index)
+{
+	if (!s || index >= s->material_images.size() || !s->material_image_initialized[index])
+		return nullptr;
+	return s->material_images[index].texture;
+}
+
 static void load_effect_if_needed(audio_shader_source *s)
 {
 	if (!s || !s->reload_effect)
@@ -970,6 +1050,28 @@ static void set_shader_params(audio_shader_source *s, uint32_t render_width, uin
 	set_texture_param(e, "audio_band_texture", s->band_texture);
 	set_texture_param(e, "audio_spectrum_texture", s->band_texture);
 
+	// VFX Material Engine v2 uniforms. The quality value and explicit raymarch
+	// budget let compatible shaders scale cost without changing source resolution.
+	set_float_param(e, "material_quality", float(s->material_quality));
+	set_float_param(e, "material_raymarch_steps", s->material_quality == 0 ? 56.0f : (s->material_quality == 1 ? 80.0f : 112.0f));
+	set_float_param(e, "material_normal_strength", s->material_normal_strength);
+	set_float_param(e, "material_height_strength", s->material_height_strength);
+	set_float_param(e, "material_environment_strength", s->material_environment_strength);
+	set_float_param(e, "material_roughness", s->material_roughness);
+	set_float_param(e, "material_metallic", s->material_metallic);
+	set_float_param(e, "material_triplanar_scale", s->material_triplanar_scale);
+	for (size_t i = 0; i < s->material_images.size(); ++i) {
+		gs_texture_t *texture = material_texture(s, i);
+		set_float_param(e, kMaterialHasUniformNames[i], texture ? 1.0f : 0.0f);
+		if (texture) {
+			set_texture_param(e, kMaterialUniformNames[i], texture);
+			set_vec2_param(e, kMaterialSizeUniformNames[i], float(gs_texture_get_width(texture)),
+			               float(gs_texture_get_height(texture)));
+		} else {
+			set_vec2_param(e, kMaterialSizeUniformNames[i], 0.0f, 0.0f);
+		}
+	}
+
 	for (size_t i = 0; i < s->options.size(); ++i) {
 		char name[32];
 		snprintf(name, sizeof(name), "option%zu", i + 1);
@@ -1005,6 +1107,7 @@ static void source_render(void *data, gs_effect_t *)
 
 	calculate_audio_state(s);
 	update_band_texture(s);
+	load_material_textures_if_needed(s);
 	load_effect_if_needed(s);
 	if (!s->effect) {
 		if (!s->render_logged_no_effect) {
@@ -1194,6 +1297,32 @@ static obs_properties_t *source_properties(void *data)
 	obs_property_list_add_int(fft, "4096", 4096);
 	obs_property_list_add_int(fft, "8192", 8192);
 	obs_properties_add_int_slider(props, S_BAND_COUNT, "Shader Bands", 8, 64, 1);
+
+	obs_properties_t *material = obs_properties_create();
+	const char *image_filter = "Images (*.png *.jpg *.jpeg *.webp *.bmp *.tga);;All files (*.*)";
+	obs_properties_add_path(material, S_MAT_ALBEDO, "Base / Albedo", OBS_PATH_FILE, image_filter, nullptr);
+	obs_properties_add_path(material, S_MAT_NORMAL, "Normal Map", OBS_PATH_FILE, image_filter, nullptr);
+	obs_properties_add_path(material, S_MAT_ROUGHNESS, "Roughness Map", OBS_PATH_FILE, image_filter, nullptr);
+	obs_properties_add_path(material, S_MAT_METALLIC, "Metallic Map", OBS_PATH_FILE, image_filter, nullptr);
+	obs_properties_add_path(material, S_MAT_HEIGHT, "Height / Displacement", OBS_PATH_FILE, image_filter, nullptr);
+	obs_properties_add_path(material, S_MAT_ENVIRONMENT, "Environment Map (equirectangular)", OBS_PATH_FILE, image_filter, nullptr);
+	obs_property_t *quality = obs_properties_add_list(material, S_MAT_QUALITY, "Material Quality",
+								 OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_INT);
+	obs_property_list_add_int(quality, "LIVE - 56 raymarch steps", 0);
+	obs_property_list_add_int(quality, "HIGH - 80 raymarch steps", 1);
+	obs_property_list_add_int(quality, "ULTRA - 112 raymarch steps", 2);
+	obs_properties_add_float_slider(material, S_MAT_NORMAL_STRENGTH, "Normal Strength", 0.0, 2.0, 0.01);
+	obs_properties_add_float_slider(material, S_MAT_HEIGHT_STRENGTH, "Height Strength", 0.0, 1.0, 0.01);
+	obs_properties_add_float_slider(material, S_MAT_ENV_STRENGTH, "Environment Strength", 0.0, 2.0, 0.01);
+	obs_properties_add_float_slider(material, S_MAT_ROUGHNESS_VALUE, "Roughness", 0.02, 1.0, 0.01);
+	obs_properties_add_float_slider(material, S_MAT_METALLIC_VALUE, "Metallic", 0.0, 1.0, 0.01);
+	obs_properties_add_float_slider(material, S_MAT_TRIPLANAR_SCALE, "Triplanar Scale", 0.25, 12.0, 0.05);
+	obs_properties_add_text(material, "material_help",
+				"VFX Material Engine v2: optional PBR texture slots. Empty slots are safe. "
+				"Environment maps are sampled as equirectangular 2D images by compatible shaders.",
+				OBS_TEXT_INFO);
+	obs_properties_add_group(props, "material_engine_v2", "VFX Material Engine v2", OBS_GROUP_NORMAL, material);
+
 	std::string meta_effect_path = s && !s->effect_path.empty() ? s->effect_path : default_effect_path_string();
 	rebuild_effect_controls(props, meta_effect_path);
 	return props;
@@ -1216,6 +1345,19 @@ static void source_defaults(obs_data_t *settings)
 	obs_data_set_default_int(settings, S_RELEASE_MS, 140);
 	obs_data_set_default_int(settings, S_FFT_SIZE, 4096);
 	obs_data_set_default_int(settings, S_BAND_COUNT, 64);
+	obs_data_set_default_string(settings, S_MAT_ALBEDO, "");
+	obs_data_set_default_string(settings, S_MAT_NORMAL, "");
+	obs_data_set_default_string(settings, S_MAT_ROUGHNESS, "");
+	obs_data_set_default_string(settings, S_MAT_METALLIC, "");
+	obs_data_set_default_string(settings, S_MAT_HEIGHT, "");
+	obs_data_set_default_string(settings, S_MAT_ENVIRONMENT, "");
+	obs_data_set_default_int(settings, S_MAT_QUALITY, 1);
+	obs_data_set_default_double(settings, S_MAT_NORMAL_STRENGTH, 1.0);
+	obs_data_set_default_double(settings, S_MAT_HEIGHT_STRENGTH, 0.35);
+	obs_data_set_default_double(settings, S_MAT_ENV_STRENGTH, 1.0);
+	obs_data_set_default_double(settings, S_MAT_ROUGHNESS_VALUE, 0.22);
+	obs_data_set_default_double(settings, S_MAT_METALLIC_VALUE, 1.0);
+	obs_data_set_default_double(settings, S_MAT_TRIPLANAR_SCALE, 2.5);
 	obs_data_set_default_int(settings, "color1", 0xFFFFFF);
 	obs_data_set_default_int(settings, "color2", 0xFFD200);
 	obs_data_set_default_int(settings, "color3", 0xBB509D);
@@ -1268,10 +1410,33 @@ static void source_update(void *data, obs_data_t *settings)
 	const int old_fft_size = s->fft_size;
 	s->fft_size = clamp_pow2((int)obs_data_get_int(settings, S_FFT_SIZE), 512, 8192);
 	s->band_count = std::clamp<int>((int)obs_data_get_int(settings, S_BAND_COUNT), 1, 64);
+
+	bool material_paths_changed = false;
+	for (size_t i = 0; i < s->material_texture_paths.size(); ++i) {
+		const char *value = obs_data_get_string(settings, kMaterialPathKeys[i]);
+		const std::string next = value ? value : "";
+		if (next != s->material_texture_paths[i]) {
+			s->material_texture_paths[i] = next;
+			material_paths_changed = true;
+		}
+	}
+	if (material_paths_changed)
+		s->reload_material_textures = true;
+	s->material_quality = std::clamp<int>((int)obs_data_get_int(settings, S_MAT_QUALITY), 0, 2);
+	s->material_normal_strength = std::clamp(float(obs_data_get_double(settings, S_MAT_NORMAL_STRENGTH)), 0.0f, 2.0f);
+	s->material_height_strength = std::clamp(float(obs_data_get_double(settings, S_MAT_HEIGHT_STRENGTH)), 0.0f, 1.0f);
+	s->material_environment_strength = std::clamp(float(obs_data_get_double(settings, S_MAT_ENV_STRENGTH)), 0.0f, 2.0f);
+	s->material_roughness = std::clamp(float(obs_data_get_double(settings, S_MAT_ROUGHNESS_VALUE)), 0.02f, 1.0f);
+	s->material_metallic = std::clamp(float(obs_data_get_double(settings, S_MAT_METALLIC_VALUE)), 0.0f, 1.0f);
+	s->material_triplanar_scale = std::clamp(float(obs_data_get_double(settings, S_MAT_TRIPLANAR_SCALE)), 0.25f, 12.0f);
+
 	if (old_fft_size != s->fft_size) {
 		s->analysis_fft_size = 0;
 		s->previous_raw_bands.fill(0.0f);
 		s->previous_kick_energy = 0.0f;
+		s->beat_floor = 0.0f;
+		s->previous_beat_focus = 0.0f;
+		s->beat_refractory = 0.0f;
 	}
 
 	if (effect_changed) {
@@ -1339,6 +1504,7 @@ static void source_destroy(void *data)
 	destroy_effect(s);
 	destroy_texrender(s);
 	destroy_band_texture(s);
+	destroy_material_textures(s);
 	obs_leave_graphics();
 	release_audio_weak(s);
 	delete s;

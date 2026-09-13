@@ -1,0 +1,403 @@
+// VFX Material Engine v2 — PBR / Triplanar / Environment diagnostic
+// Compatible with Audio Shader Engine v2 material uniforms.
+// Empty texture slots are safe: procedural/default material values are used.
+
+uniform float4x4 ViewProj;
+uniform float2 source_size;
+uniform float2 resolution;
+uniform float render_scale;
+uniform float time;
+
+uniform float audio_sub;
+uniform float audio_low;
+uniform float audio_low_mid;
+uniform float audio_mid_vfx;
+uniform float audio_high_mid;
+uniform float audio_high;
+uniform float audio_transient;
+uniform float audio_kick;
+uniform float audio_beat;
+uniform float audio_body;
+uniform float audio_motion;
+uniform float audio_detail;
+uniform float audio_impact;
+uniform float audio_energy;
+uniform float audio_pressure;
+uniform float audio_groove;
+uniform float audio_texture;
+
+uniform texture2d material_albedo_texture;
+uniform texture2d material_normal_texture;
+uniform texture2d material_roughness_texture;
+uniform texture2d material_metallic_texture;
+uniform texture2d material_height_texture;
+uniform texture2d material_environment_texture;
+
+uniform float material_has_albedo;
+uniform float material_has_normal;
+uniform float material_has_roughness;
+uniform float material_has_metallic;
+uniform float material_has_height;
+uniform float material_has_environment;
+uniform float2 material_albedo_size;
+uniform float2 material_normal_size;
+uniform float2 material_roughness_size;
+uniform float2 material_metallic_size;
+uniform float2 material_height_size;
+uniform float2 material_environment_size;
+uniform float material_quality;
+uniform float material_raymarch_steps;
+uniform float material_normal_strength;
+uniform float material_height_strength;
+uniform float material_environment_strength;
+uniform float material_roughness;
+uniform float material_metallic;
+uniform float material_triplanar_scale;
+
+uniform float option1;
+uniform float option2;
+uniform float option3;
+uniform float option4;
+uniform float option5;
+uniform float option6;
+uniform float option7;
+uniform float option8;
+uniform float4 color1;
+uniform float4 color2;
+uniform float4 color3;
+uniform float4 color4;
+
+sampler_state MaterialSampler {
+    Filter = Linear;
+    AddressU = Wrap;
+    AddressV = Wrap;
+};
+
+sampler_state EnvironmentSampler {
+    Filter = Linear;
+    AddressU = Wrap;
+    AddressV = Clamp;
+};
+
+struct VertIn { float4 pos : POSITION; float2 uv : TEXCOORD0; };
+struct VertOut { float4 pos : POSITION; float2 uv : TEXCOORD0; };
+
+VertOut VSDefault(VertIn v_in)
+{
+    VertOut o;
+    o.pos = mul(float4(v_in.pos.xyz, 1.0), ViewProj);
+    o.uv = v_in.uv;
+    return o;
+}
+
+float hash31(float3 p)
+{
+    p = frac(p * 0.1031);
+    p += dot(p, p.yzx + 33.33);
+    return frac((p.x + p.y) * p.z);
+}
+
+float noise3(float3 p)
+{
+    float3 i = floor(p);
+    float3 f = frac(p);
+    f = f*f*(3.0-2.0*f);
+    float n000=hash31(i+float3(0,0,0));
+    float n100=hash31(i+float3(1,0,0));
+    float n010=hash31(i+float3(0,1,0));
+    float n110=hash31(i+float3(1,1,0));
+    float n001=hash31(i+float3(0,0,1));
+    float n101=hash31(i+float3(1,0,1));
+    float n011=hash31(i+float3(0,1,1));
+    float n111=hash31(i+float3(1,1,1));
+    float nx00=lerp(n000,n100,f.x);
+    float nx10=lerp(n010,n110,f.x);
+    float nx01=lerp(n001,n101,f.x);
+    float nx11=lerp(n011,n111,f.x);
+    return lerp(lerp(nx00,nx10,f.y),lerp(nx01,nx11,f.y),f.z);
+}
+
+float fbm3(float3 p)
+{
+    float v=0.0;
+    float a=0.52;
+    v += noise3(p)*a; p=p*2.03+float3(7.1,13.7,3.2); a*=0.5;
+    v += noise3(p)*a; p=p*2.01+float3(19.2,2.8,11.4); a*=0.5;
+    v += noise3(p)*a; p=p*2.04+float3(4.5,23.1,8.6); a*=0.5;
+    v += noise3(p)*a;
+    return v;
+}
+
+float3 rotY(float3 p, float a)
+{
+    float c=cos(a), s=sin(a);
+    return float3(c*p.x+s*p.z,p.y,-s*p.x+c*p.z);
+}
+
+float3 rotX(float3 p, float a)
+{
+    float c=cos(a), s=sin(a);
+    return float3(p.x,c*p.y-s*p.z,s*p.y+c*p.z);
+}
+
+float3 triWeights(float3 n)
+{
+    float3 w = pow(abs(n), float3(5.0,5.0,5.0));
+    return w / max(w.x+w.y+w.z, 0.0001);
+}
+
+float3 sampleAlbedo(float3 p, float3 n)
+{
+    float3 fallback = lerp(color1.rgb, color2.rgb, 0.22 + 0.20*fbm3(p*2.0));
+    if (material_has_albedo < 0.5)
+        return fallback;
+    float s = max(material_triplanar_scale,0.01);
+    float3 w = triWeights(n);
+    float3 tx = material_albedo_texture.Sample(MaterialSampler,p.yz*s).rgb;
+    float3 ty = material_albedo_texture.Sample(MaterialSampler,p.xz*s).rgb;
+    float3 tz = material_albedo_texture.Sample(MaterialSampler,p.xy*s).rgb;
+    return tx*w.x + ty*w.y + tz*w.z;
+}
+
+float sampleRoughness(float3 p, float3 n)
+{
+    if (material_has_roughness < 0.5)
+        return material_roughness;
+    float s = max(material_triplanar_scale,0.01);
+    float3 w = triWeights(n);
+    float x = material_roughness_texture.Sample(MaterialSampler,p.yz*s).r;
+    float y = material_roughness_texture.Sample(MaterialSampler,p.xz*s).r;
+    float z = material_roughness_texture.Sample(MaterialSampler,p.xy*s).r;
+    return saturate(x*w.x+y*w.y+z*w.z);
+}
+
+float sampleMetallic(float3 p, float3 n)
+{
+    if (material_has_metallic < 0.5)
+        return material_metallic;
+    float s = max(material_triplanar_scale,0.01);
+    float3 w = triWeights(n);
+    float x = material_metallic_texture.Sample(MaterialSampler,p.yz*s).r;
+    float y = material_metallic_texture.Sample(MaterialSampler,p.xz*s).r;
+    float z = material_metallic_texture.Sample(MaterialSampler,p.xy*s).r;
+    return saturate(x*w.x+y*w.y+z*w.z);
+}
+
+float sampleHeight(float3 p, float3 n)
+{
+    if (material_has_height < 0.5)
+        return 0.5;
+    float s = max(material_triplanar_scale,0.01);
+    float3 w = triWeights(n);
+    float x = material_height_texture.Sample(MaterialSampler,p.yz*s).r;
+    float y = material_height_texture.Sample(MaterialSampler,p.xz*s).r;
+    float z = material_height_texture.Sample(MaterialSampler,p.xy*s).r;
+    return x*w.x+y*w.y+z*w.z;
+}
+
+float3 applyNormalMap(float3 p, float3 n)
+{
+    if (material_has_normal < 0.5 || material_normal_strength <= 0.001)
+        return n;
+    float s = max(material_triplanar_scale,0.01);
+    float3 w = triWeights(n);
+    float3 sx = material_normal_texture.Sample(MaterialSampler,p.yz*s).xyz*2.0-1.0;
+    float3 sy = material_normal_texture.Sample(MaterialSampler,p.xz*s).xyz*2.0-1.0;
+    float3 sz = material_normal_texture.Sample(MaterialSampler,p.xy*s).xyz*2.0-1.0;
+    float3 nx = normalize(float3(sx.z*(n.x<0.0?-1.0:1.0),sx.x,sx.y));
+    float3 ny = normalize(float3(sy.x,sy.z*(n.y<0.0?-1.0:1.0),sy.y));
+    float3 nz = normalize(float3(sz.x,sz.y,sz.z*(n.z<0.0?-1.0:1.0)));
+    float3 mapped = normalize(nx*w.x+ny*w.y+nz*w.z);
+    return normalize(lerp(n,mapped,saturate(material_normal_strength)));
+}
+
+float2 envUV(float3 r)
+{
+    r = normalize(r);
+    float u = atan2(r.z,r.x) / 6.28318530718 + 0.5;
+    float v = acos(clamp(r.y,-1.0,1.0)) / 3.14159265359;
+    return float2(u,v);
+}
+
+float3 proceduralEnvironment(float3 r)
+{
+    float side1=pow(saturate(1.0-abs(r.x*0.70+r.z*0.22)),28.0);
+    float side2=pow(saturate(1.0-abs(r.x*0.55-r.z*0.44)),42.0);
+    float top=pow(saturate(r.y*0.66+0.34),14.0);
+    float floor=pow(saturate(-r.y*0.86+0.14),22.0);
+    float3 e=float3(0.008,0.010,0.014);
+    e+=float3(1.0,0.98,0.94)*side1*0.90;
+    e+=float3(0.28,0.58,1.0)*side2*0.52;
+    e+=float3(0.72,0.82,1.0)*top*0.25;
+    e+=float3(1.0,0.18,0.04)*floor*0.12;
+    return e;
+}
+
+float3 sampleEnvironment(float3 r)
+{
+    if (material_has_environment > 0.5)
+        return material_environment_texture.Sample(EnvironmentSampler,envUV(r)).rgb * material_environment_strength;
+    return proceduralEnvironment(r) * material_environment_strength;
+}
+
+float sceneSDF(float3 p, float flow, float detail, float pressure, float impact)
+{
+    float3 q=p;
+    q += flow*0.075*float3(sin(q.y*3.0+time*0.8),cos(q.z*2.7-time*0.7),sin(q.x*2.5+time*0.6));
+    float broad=fbm3(q*(2.0+detail*1.8)+float3(time*0.035,-time*0.027,time*0.019));
+    float radius=1.0 + pressure*0.11 + impact*0.025;
+    radius += (broad-0.5)*(0.055+detail*0.09);
+    if (material_has_height > 0.5 && material_quality > 0.5) {
+        float3 radial=normalize(q);
+        float h=sampleHeight(radial,radial)-0.5;
+        radius += h*material_height_strength*0.16;
+    }
+    return length(q)-radius;
+}
+
+float3 sceneNormal(float3 p, float flow, float detail, float pressure, float impact)
+{
+    float eps=max(0.0018,1.5/max(resolution.y,1.0));
+    float2 e=float2(eps,0.0);
+    float dx=sceneSDF(p+e.xyy,flow,detail,pressure,impact)-sceneSDF(p-e.xyy,flow,detail,pressure,impact);
+    float dy=sceneSDF(p+e.yxy,flow,detail,pressure,impact)-sceneSDF(p-e.yxy,flow,detail,pressure,impact);
+    float dz=sceneSDF(p+e.yyx,flow,detail,pressure,impact)-sceneSDF(p-e.yyx,flow,detail,pressure,impact);
+    return normalize(float3(dx,dy,dz));
+}
+
+float DistributionGGX(float3 N,float3 H,float roughness)
+{
+    float a=roughness*roughness;
+    float a2=a*a;
+    float NdotH=max(dot(N,H),0.0);
+    float NdotH2=NdotH*NdotH;
+    float denom=(NdotH2*(a2-1.0)+1.0);
+    return a2/max(3.14159265*denom*denom,0.0001);
+}
+
+float GeometrySchlickGGX(float NdotV,float roughness)
+{
+    float r=roughness+1.0;
+    float k=(r*r)/8.0;
+    return NdotV/max(NdotV*(1.0-k)+k,0.0001);
+}
+
+float GeometrySmith(float3 N,float3 V,float3 L,float roughness)
+{
+    return GeometrySchlickGGX(max(dot(N,V),0.0),roughness)*GeometrySchlickGGX(max(dot(N,L),0.0),roughness);
+}
+
+float3 FresnelSchlick(float cosTheta,float3 F0)
+{
+    return F0+(1.0-F0)*pow(1.0-saturate(cosTheta),5.0);
+}
+
+float3 pbrLight(float3 albedo,float metallic,float roughness,float3 N,float3 V,float3 L,float3 radiance)
+{
+    float3 H=normalize(V+L);
+    float3 F0=lerp(float3(0.04,0.04,0.04),albedo,metallic);
+    float NDF=DistributionGGX(N,H,roughness);
+    float G=GeometrySmith(N,V,L,roughness);
+    float3 F=FresnelSchlick(max(dot(H,V),0.0),F0);
+    float3 numerator=NDF*G*F;
+    float denom=4.0*max(dot(N,V),0.0)*max(dot(N,L),0.0)+0.0001;
+    float3 spec=numerator/denom;
+    float3 kS=F;
+    float3 kD=(1.0-kS)*(1.0-metallic);
+    float NdotL=max(dot(N,L),0.0);
+    return (kD*albedo/3.14159265+spec)*radiance*NdotL;
+}
+
+float4 PSDefault(VertOut v_in) : TARGET
+{
+    float master=lerp(0.45,2.4,option8);
+    float pressure=saturate(audio_pressure*master);
+    float impact=saturate(audio_impact*master);
+    float motion=saturate(audio_motion*master);
+    float detail=saturate((audio_detail*0.45+audio_texture*0.55)*master);
+    float beat=saturate(audio_beat*(0.85+master*0.35));
+
+    float2 uv=v_in.uv*2.0-1.0;
+    uv.x*=source_size.x/max(source_size.y,1.0);
+
+    float objectScale=lerp(0.46,0.82,option1);
+    float heartDepth=option4;
+    float lowBody=saturate(audio_sub*0.55+audio_low*0.45);
+    float heartSignal=clamp(lowBody*0.48-beat*1.08,-1.0,1.0);
+    float heartScale=1.0+heartSignal*heartDepth*(heartSignal<0.0?0.36:0.20);
+    objectScale*=max(heartScale,0.58);
+
+    float2 p2=uv/max(objectScale,0.20);
+    float3 ro=float3(p2.x,p2.y,-3.15);
+    float3 rd=float3(0.0,0.0,1.0);
+
+    float ry=time*(0.08+option5*0.34)+audio_groove*0.20;
+    float rx=0.12+sin(time*0.14)*0.08+audio_motion*0.10;
+    ro=rotY(ro,-ry); rd=rotY(rd,-ry);
+    ro=rotX(ro,-rx); rd=rotX(rd,-rx);
+
+    float flow=option2*(0.20+motion*0.90);
+    float deformDetail=option3*(0.18+detail*0.88);
+
+    float travel=0.0;
+    float hit=0.0;
+    float3 hp=float3(0.0,0.0,0.0);
+    const int MAX_STEPS=112;
+    for (int i=0;i<MAX_STEPS;++i) {
+        if ((float)i>=material_raymarch_steps)
+            break;
+        float3 pos=ro+rd*travel;
+        float d=sceneSDF(pos,flow,deformDetail,pressure*option6,impact*0.35);
+        if (d<0.0022) {
+            hit=1.0;
+            hp=pos;
+            break;
+        }
+        travel+=d*0.72;
+        if (travel>6.2)
+            break;
+    }
+
+    if (hit<0.5)
+        return float4(0.0,0.0,0.0,0.0);
+
+    float3 N=sceneNormal(hp,flow,deformDetail,pressure*option6,impact*0.35);
+    N=applyNormalMap(normalize(hp),N);
+    float3 V=normalize(-rd);
+    float3 albedo=sampleAlbedo(normalize(hp),N);
+    albedo=lerp(albedo,albedo*color3.rgb,option7*0.18);
+
+    float rough=clamp(sampleRoughness(normalize(hp),N)+audio_high*option7*0.10,0.035,1.0);
+    float metal=saturate(sampleMetallic(normalize(hp),N));
+
+    float3 L1=normalize(float3(-0.52,-0.38,-0.76));
+    float3 L2=normalize(float3(0.58,0.22,-0.78));
+    float3 direct=pbrLight(albedo,metal,rough,N,V,L1,float3(4.0,3.7,3.3));
+    direct+=pbrLight(albedo,metal,rough,N,V,L2,float3(0.7,1.2,2.2));
+
+    float3 R=reflect(-V,N);
+    float3 env=sampleEnvironment(R);
+    float3 F0=lerp(float3(0.04,0.04,0.04),albedo,metal);
+    float3 F=FresnelSchlick(max(dot(N,V),0.0),F0);
+    float envBlur=lerp(1.0,0.28,rough);
+    float3 ambient=env*(F*(0.34+option6*0.86))*envBlur;
+    ambient+=albedo*(1.0-metal)*(0.035+audio_energy*0.025);
+
+    float rim=pow(1.0-saturate(dot(N,V)),3.2);
+    float3 col=direct+ambient+color4.rgb*rim*option6*0.10;
+    col*=0.92+audio_energy*0.12;
+    col=col/(col+1.0);
+    col=pow(saturate(col),float3(0.82,0.82,0.82));
+
+    float alpha=0.985;
+    return float4(col,alpha);
+}
+
+technique Draw
+{
+    pass
+    {
+        vertex_shader = VSDefault(v_in);
+        pixel_shader = PSDefault(v_in);
+    }
+}

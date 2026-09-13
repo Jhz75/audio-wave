@@ -1,5 +1,6 @@
 // VFX Material Engine v2 — PBR / Triplanar / Environment diagnostic
 // Compatible with Audio Shader Engine v2 material uniforms.
+// Geometry height displacement is intentionally ULTRA-only; LIVE/HIGH keep texture cost bounded.
 // Empty texture slots are safe: procedural/default material values are used.
 
 uniform float4x4 ViewProj;
@@ -247,7 +248,7 @@ float sceneSDF(float3 p, float flow, float detail, float pressure, float impact)
     float broad=fbm3(q*(2.0+detail*1.8)+float3(time*0.035,-time*0.027,time*0.019));
     float radius=1.0 + pressure*0.11 + impact*0.025;
     radius += (broad-0.5)*(0.055+detail*0.09);
-    if (material_has_height > 0.5 && material_quality > 0.5) {
+    if (material_has_height > 0.5 && material_quality > 1.5) {
         float3 radial=normalize(q);
         float h=sampleHeight(radial,radial)-0.5;
         radius += h*material_height_strength*0.16;

@@ -1,0 +1,15 @@
+name: Build VFX v1.6
+
+on:
+  push:
+    branches:
+      - audio-wave-vfx-v1
+    paths:
+      - src/audio-shader-source.cpp
+      - src/includes/audio-shader-source.hpp
+      - .github/workflows/build-vfx-v1-6.yaml
+
+jobs:
+  build:
+    uses: ./.github/workflows/build-project.yaml
+    secrets: inherit

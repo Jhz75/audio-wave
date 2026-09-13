@@ -1,0 +1,29 @@
+name: Fix VFX v1.6 Render Scale Order
+
+on:
+  push:
+    branches:
+      - audio-wave-vfx-v1
+    paths:
+      - tools/fix-vfx-v1-6-render-scale-order.py
+      - .github/workflows/fix-vfx-v1-6-render-scale-order.yaml
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: audio-wave-vfx-v1
+          fetch-depth: 0
+      - run: python3 tools/fix-vfx-v1-6-render-scale-order.py
+      - run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/audio-shader-source.cpp
+          git diff --cached --quiet && exit 0
+          git commit -m "Fix VFX v1.6 preset render-scale validation"
+          git push

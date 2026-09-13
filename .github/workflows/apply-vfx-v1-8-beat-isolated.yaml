@@ -1,0 +1,31 @@
+name: Apply VFX v1.8 Beat Isolated
+
+on:
+  push:
+    branches:
+      - audio-wave-vfx-v1
+    paths:
+      - tools/apply-vfx-v1-8-beat-isolated.py
+      - .github/workflows/apply-vfx-v1-8-beat-isolated.yaml
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: audio-wave-vfx-v1
+          fetch-depth: 0
+      - name: Apply guarded migration
+        run: python3 tools/apply-vfx-v1-8-beat-isolated.py
+      - name: Commit source changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/audio-shader-source.cpp src/includes/audio-shader-source.hpp
+          git diff --cached --quiet && exit 0
+          git commit -m "Add VFX v1.8 isolated beat detector"
+          git push

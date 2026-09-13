@@ -9,7 +9,7 @@ on:
       - src/includes/audio-shader-source.hpp
       - .github/workflows/build-vfx-v1-6.yaml
 
-# validation trigger after preset parser compile-order fix
+# validation trigger for VFX v1.7 independent beat envelope
 jobs:
   build:
     uses: ./.github/workflows/build-project.yaml

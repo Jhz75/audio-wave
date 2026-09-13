@@ -161,7 +161,62 @@ struct effect_metadata {
 	std::string name;
 	std::array<std::string, 16> option_labels{};
 	std::array<std::string, 8> color_labels{};
+	std::array<float, 16> option_defaults{};
+	std::array<bool, 16> option_default_set{};
+	std::array<uint32_t, 8> color_defaults{};
+	std::array<bool, 8> color_default_set{};
+	bool use_obs_canvas_set = false;
+	bool use_obs_canvas = false;
+	bool width_set = false;
+	int width = 0;
+	bool height_set = false;
+	int height = 0;
+	bool render_scale_set = false;
+	int render_scale = 100;
+	bool react_db_set = false;
+	float react_db = -82.0f;
+	bool peak_db_set = false;
+	float peak_db = -28.0f;
+	bool attack_ms_set = false;
+	int attack_ms = 14;
+	bool release_ms_set = false;
+	int release_ms = 140;
+	bool fft_size_set = false;
+	int fft_size = 4096;
+	bool band_count_set = false;
+	int band_count = 64;
 };
+
+static bool parse_bool_value(std::string value, bool *out)
+{
+	std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) { return (char)std::tolower(c); });
+	if (value == "1" || value == "true" || value == "yes" || value == "on") {
+		*out = true;
+		return true;
+	}
+	if (value == "0" || value == "false" || value == "no" || value == "off") {
+		*out = false;
+		return true;
+	}
+	return false;
+}
+
+static bool parse_hex_rgb(std::string value, uint32_t *out)
+{
+	if (!value.empty() && value[0] == '#')
+		value.erase(0, 1);
+	if (value.size() != 6)
+		return false;
+	char *end = nullptr;
+	const unsigned long rgb = std::strtoul(value.c_str(), &end, 16);
+	if (!end || *end != '\0')
+		return false;
+	const uint32_t r = (uint32_t(rgb) >> 16) & 0xFFu;
+	const uint32_t g = (uint32_t(rgb) >> 8) & 0xFFu;
+	const uint32_t b = uint32_t(rgb) & 0xFFu;
+	*out = r | (g << 8) | (b << 16);
+	return true;
+}
 
 static std::string default_effect_path_string()
 {
@@ -215,9 +270,85 @@ static effect_metadata load_effect_metadata(const std::string &effect_path)
 			const int idx = std::atoi(key.c_str() + 5);
 			if (idx >= 1 && idx <= 8)
 				meta.color_labels[(size_t)idx - 1] = value;
+		} else if (section == "defaults") {
+			if (key.rfind("option", 0) == 0) {
+				const int idx = std::atoi(key.c_str() + 6);
+				if (idx >= 1 && idx <= 16) {
+					meta.option_defaults[(size_t)idx - 1] = std::clamp((float)std::atof(value.c_str()), 0.0f, 1.0f);
+					meta.option_default_set[(size_t)idx - 1] = true;
+				}
+			} else if (key.rfind("color", 0) == 0) {
+				const int idx = std::atoi(key.c_str() + 5);
+				uint32_t color = 0;
+				if (idx >= 1 && idx <= 8 && parse_hex_rgb(value, &color)) {
+					meta.color_defaults[(size_t)idx - 1] = color;
+					meta.color_default_set[(size_t)idx - 1] = true;
+				}
+			} else if (key == "use_obs_canvas") {
+				meta.use_obs_canvas_set = parse_bool_value(value, &meta.use_obs_canvas);
+			} else if (key == "width") {
+				meta.width = std::atoi(value.c_str());
+				meta.width_set = true;
+			} else if (key == "height") {
+				meta.height = std::atoi(value.c_str());
+				meta.height_set = true;
+			} else if (key == "render_scale") {
+				meta.render_scale = std::atoi(value.c_str());
+				meta.render_scale_set = true;
+			} else if (key == "react_db") {
+				meta.react_db = (float)std::atof(value.c_str());
+				meta.react_db_set = true;
+			} else if (key == "peak_db") {
+				meta.peak_db = (float)std::atof(value.c_str());
+				meta.peak_db_set = true;
+			} else if (key == "attack_ms") {
+				meta.attack_ms = std::atoi(value.c_str());
+				meta.attack_ms_set = true;
+			} else if (key == "release_ms") {
+				meta.release_ms = std::atoi(value.c_str());
+				meta.release_ms_set = true;
+			} else if (key == "fft_size") {
+				meta.fft_size = std::atoi(value.c_str());
+				meta.fft_size_set = true;
+			} else if (key == "band_count") {
+				meta.band_count = std::atoi(value.c_str());
+				meta.band_count_set = true;
+			}
 		}
 	}
 	return meta;
+}
+
+static bool apply_effect_defaults(obs_data_t *settings, const effect_metadata &meta)
+{
+	bool applied = false;
+	if (meta.use_obs_canvas_set) { obs_data_set_bool(settings, S_USE_OBS_CANVAS, meta.use_obs_canvas); applied = true; }
+	if (meta.width_set) { obs_data_set_int(settings, S_WIDTH, std::clamp(meta.width, 16, 8192)); applied = true; }
+	if (meta.height_set) { obs_data_set_int(settings, S_HEIGHT, std::clamp(meta.height, 16, 8192)); applied = true; }
+	if (meta.render_scale_set) { obs_data_set_int(settings, S_RENDER_SCALE, valid_render_scale(meta.render_scale)); applied = true; }
+	if (meta.react_db_set) { obs_data_set_double(settings, S_REACT_DB, std::clamp(meta.react_db, -90.0f, -1.0f)); applied = true; }
+	if (meta.peak_db_set) { obs_data_set_double(settings, S_PEAK_DB, std::clamp(meta.peak_db, -60.0f, 0.0f)); applied = true; }
+	if (meta.attack_ms_set) { obs_data_set_int(settings, S_ATTACK_MS, std::clamp(meta.attack_ms, 0, 500)); applied = true; }
+	if (meta.release_ms_set) { obs_data_set_int(settings, S_RELEASE_MS, std::clamp(meta.release_ms, 0, 2000)); applied = true; }
+	if (meta.fft_size_set) { obs_data_set_int(settings, S_FFT_SIZE, clamp_pow2(meta.fft_size, 512, 8192)); applied = true; }
+	if (meta.band_count_set) { obs_data_set_int(settings, S_BAND_COUNT, std::clamp(meta.band_count, 8, 64)); applied = true; }
+	for (int i = 1; i <= 16; ++i) {
+		if (!meta.option_default_set[(size_t)i - 1])
+			continue;
+		char key[32];
+		snprintf(key, sizeof(key), "%s%d", S_OPTION_PREFIX, i);
+		obs_data_set_double(settings, key, meta.option_defaults[(size_t)i - 1]);
+		applied = true;
+	}
+	for (int i = 1; i <= 8; ++i) {
+		if (!meta.color_default_set[(size_t)i - 1])
+			continue;
+		char key[32];
+		snprintf(key, sizeof(key), "%s%d", S_COLOR_PREFIX, i);
+		obs_data_set_int(settings, key, meta.color_defaults[(size_t)i - 1]);
+		applied = true;
+	}
+	return applied;
 }
 
 static void rebuild_effect_controls(obs_properties_t *props, const std::string &effect_path)
@@ -1004,8 +1135,8 @@ static obs_properties_t *source_properties(void *data)
 	}
 	obs_properties_add_text(props, "shader_status", shader_status.c_str(), OBS_TEXT_INFO);
 	obs_properties_add_text(props, "effect_metadata_help",
-				"Effect controls are loaded from a sidecar file named your-shader.effect.ini. "
-				"Up to 16 named option sliders and 8 named colors can be exposed; unnamed option uniforms stay hidden.",
+				"Effect controls and optional startup presets are loaded from your-shader.effect.ini. "
+				"A [defaults] section can set canvas/audio parameters, 16 sliders and 8 colors when a new shader is selected.",
 				OBS_TEXT_INFO);
 	obs_property_t *use_canvas = obs_properties_add_bool(props, S_USE_OBS_CANVAS, "Use OBS base canvas size");
 	obs_property_set_modified_callback(use_canvas, use_canvas_modified);
@@ -1068,6 +1199,16 @@ static void source_update(void *data, obs_data_t *settings)
 		return;
 	detach_audio(s);
 	std::lock_guard<std::mutex> lock(s->render_mutex);
+
+	const char *new_effect = obs_data_get_string(settings, S_EFFECT_PATH);
+	std::string next_path = new_effect ? new_effect : "";
+	const bool effect_changed = next_path != s->effect_path;
+	if (effect_changed && s->initial_update_complete && !next_path.empty()) {
+		const effect_metadata meta = load_effect_metadata(next_path);
+		if (apply_effect_defaults(settings, meta))
+			BLOG(LOG_INFO, "Applied shader startup preset from '%s.ini'", next_path.c_str());
+	}
+
 	s->audio_source_name = obs_data_get_string(settings, S_AUDIO_SOURCE);
 	s->use_obs_canvas = obs_data_get_bool(settings, S_USE_OBS_CANVAS);
 
@@ -1099,9 +1240,7 @@ static void source_update(void *data, obs_data_t *settings)
 		s->previous_kick_energy = 0.0f;
 	}
 
-	const char *new_effect = obs_data_get_string(settings, S_EFFECT_PATH);
-	std::string next_path = new_effect ? new_effect : "";
-	if (next_path != s->effect_path) {
+	if (effect_changed) {
 		s->effect_path = next_path;
 		s->reload_effect = true;
 		s->render_logged_ok = false;
@@ -1129,6 +1268,7 @@ static void source_update(void *data, obs_data_t *settings)
 		}
 	}
 	attach_audio(s);
+	s->initial_update_complete = true;
 }
 
 static void *source_create(obs_data_t *settings, obs_source_t *source)

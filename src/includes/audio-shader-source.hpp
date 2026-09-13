@@ -85,6 +85,7 @@ struct audio_shader_source {
 	bool render_logged_ok = false;
 	bool render_logged_no_effect = false;
 	bool render_logged_no_technique = false;
+	bool initial_update_complete = false;
 
 	gs_texrender_t *texrender = nullptr;
 

@@ -325,7 +325,13 @@ static bool apply_effect_defaults(obs_data_t *settings, const effect_metadata &m
 	if (meta.use_obs_canvas_set) { obs_data_set_bool(settings, S_USE_OBS_CANVAS, meta.use_obs_canvas); applied = true; }
 	if (meta.width_set) { obs_data_set_int(settings, S_WIDTH, std::clamp(meta.width, 16, 8192)); applied = true; }
 	if (meta.height_set) { obs_data_set_int(settings, S_HEIGHT, std::clamp(meta.height, 16, 8192)); applied = true; }
-	if (meta.render_scale_set) { obs_data_set_int(settings, S_RENDER_SCALE, valid_render_scale(meta.render_scale)); applied = true; }
+	if (meta.render_scale_set) {
+		const int scale = (meta.render_scale == 25 || meta.render_scale == 50 || meta.render_scale == 75 || meta.render_scale == 100)
+				  ? meta.render_scale
+				  : 100;
+		obs_data_set_int(settings, S_RENDER_SCALE, scale);
+		applied = true;
+	}
 	if (meta.react_db_set) { obs_data_set_double(settings, S_REACT_DB, std::clamp(meta.react_db, -90.0f, -1.0f)); applied = true; }
 	if (meta.peak_db_set) { obs_data_set_double(settings, S_PEAK_DB, std::clamp(meta.peak_db, -60.0f, 0.0f)); applied = true; }
 	if (meta.attack_ms_set) { obs_data_set_int(settings, S_ATTACK_MS, std::clamp(meta.attack_ms, 0, 500)); applied = true; }

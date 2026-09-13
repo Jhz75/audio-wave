@@ -1,0 +1,31 @@
+name: Apply VFX Material Engine v2
+
+on:
+  push:
+    branches:
+      - vfx-material-engine-v2
+    paths:
+      - tools/apply-vfx-material-engine-v2.py
+      - .github/workflows/apply-vfx-material-engine-v2.yaml
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: vfx-material-engine-v2
+          fetch-depth: 0
+      - name: Apply guarded migration
+        run: python3 tools/apply-vfx-material-engine-v2.py
+      - name: Commit source changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/audio-shader-source.cpp src/includes/audio-shader-source.hpp
+          git diff --cached --quiet && exit 0
+          git commit -m "Implement VFX Material Engine v2 core"
+          git push

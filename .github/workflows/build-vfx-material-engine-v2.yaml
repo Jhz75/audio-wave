@@ -1,0 +1,28 @@
+name: Build VFX Material Engine v2
+
+on:
+  push:
+    branches:
+      - vfx-material-engine-v2
+    paths:
+      - src/audio-shader-source.cpp
+      - src/includes/audio-shader-source.hpp
+      - data/effects/vfx-material-engine-v2-pbr-sphere.effect
+      - data/effects/vfx-material-engine-v2-pbr-sphere.effect.ini
+      - tools/validate-vfx-material-engine-v2.py
+      - .github/workflows/build-vfx-material-engine-v2.yaml
+  workflow_dispatch:
+
+jobs:
+  validate:
+    name: Static validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate material engine source and shader
+        run: python3 tools/validate-vfx-material-engine-v2.py
+
+  build:
+    needs: validate
+    uses: ./.github/workflows/build-project.yaml
+    secrets: inherit

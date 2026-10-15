@@ -1,5 +1,19 @@
 # Audio Waves Visualizer for OBS Studio
 
+## CHROME MORPH prototype (isolated development branch)
+
+This branch adds a separate native **CHROME MORPH · Prototype** source for an
+automatically calibrated, audio-reactive liquid chrome sculpture. Existing Audio
+Shader Engine sources and shaders retain their implementation and settings.
+
+- [Technical audit and architecture (FR)](docs/CHROME_MORPH_AUDIT.md)
+- [Windows installation and OBS setup (FR)](docs/CHROME_MORPH_INSTALLATION.md)
+- [Validation and measured limits (FR)](docs/CHROME_MORPH_VALIDATION.md)
+- [Shader preview](docs/CHROME_MORPH_preview.png)
+
+The `CHROME MORPH prototype` Actions workflow produces a Windows test ZIP on this
+branch. It does not publish a release or merge into `main`.
+
 Audio Waves Visualizer is a minimal OBS source plugin for building audio-reactive visuals with OBS `.effect` / HLSL shaders.
 
 The plugin itself does not hardcode visual themes. It creates a transparent video source, reads level and spectrum data from a selected OBS audio source, then passes that data into the selected shader as uniforms.

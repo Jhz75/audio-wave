@@ -1,0 +1,127 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+// Native OBS SDF sculpture. Output is premultiplied SDR RGBA.
+uniform float4x4 ViewProj;
+uniform float2 resolution;
+uniform float4 audio;       // kick, bass, mid, high
+uniform float4 shape;       // integrated time, separation, opening, intensity
+uniform float4 rotation;    // cos(yaw), sin(yaw), cos(roll), sin(roll)
+uniform float steps;
+
+struct VertIn { float4 pos : POSITION; float2 uv : TEXCOORD0; };
+struct VertOut { float4 pos : POSITION; float2 uv : TEXCOORD0; };
+VertOut VSDefault(VertIn v_in)
+{
+    VertOut o;
+    o.pos = mul(float4(v_in.pos.xyz, 1.0), ViewProj);
+    o.uv = v_in.uv;
+    return o;
+}
+
+float smoothUnion(float a, float b, float k)
+{
+    float h = saturate(0.5 + 0.5 * (b - a) / k);
+    return lerp(b, a, h) - k * h * (1.0 - h);
+}
+
+float3 toObject(float3 p)
+{
+    p = float3(rotation.x*p.x + rotation.y*p.z, p.y, -rotation.y*p.x + rotation.x*p.z);
+    return float3(rotation.z*p.x - rotation.w*p.y, rotation.w*p.x + rotation.z*p.y, p.z);
+}
+
+float sculpture(float3 p, float4 design, float4 sound)
+{
+    float3 q = toObject(p);
+    // Broad, bounded warp; high-frequency detail is shaded ONLY at the hit.
+    q.x /= 1.0 + sound.y * 0.08;
+    q.y *= 1.0 + sound.x * 0.18;
+    q += 0.042 * sin(q.yzx * 2.6 + float3(design.x*0.7, -design.x*0.55, design.x*0.4));
+    float separation = design.y;
+    float spread = lerp(0.44, 1.25, separation);
+    float k = lerp(0.32, 0.11, separation);
+    float core = length(q) - lerp(0.86, 0.24, separation);
+    float a = length(q - float3(spread, 0.12, 0.13)) - 0.59;
+    float b = length(q - float3(-spread, -0.10, -0.13)) - 0.61;
+    float d = smoothUnion(smoothUnion(core, a, k), b, k);
+    float drop = length(q - float3(0.12, 0.93 + separation*0.12, 0.05)) - (0.32 + sound.z*0.07);
+    d = smoothUnion(d, drop, k);
+    // A real through-opening, with a rounded lip, rather than a normal-map trick.
+    float hole = length(q.xy - float2(0.0, 0.05)) - design.z*0.36;
+    if (design.z > 0.025)
+        d = -smoothUnion(-d, hole, 0.055);
+    return d;
+}
+
+float3 normalAt(float3 p, float eps, float4 design, float4 sound)
+{
+    // Four tetrahedral samples, versus six central differences.
+    float3 a = float3(1.0,-1.0,-1.0), b = float3(-1.0,-1.0,1.0);
+    float3 c = float3(-1.0,1.0,-1.0), d = float3(1.0,1.0,1.0);
+    return normalize(a*sculpture(p+a*eps,design,sound) + b*sculpture(p+b*eps,design,sound) +
+                     c*sculpture(p+c*eps,design,sound) + d*sculpture(p+d*eps,design,sound));
+}
+
+float3 studio(float3 r)
+{
+    float3 env = lerp(float3(0.025,0.031,0.045), float3(0.26,0.31,0.39), saturate(r.y*0.5+0.5));
+    float key = pow(saturate(dot(r,normalize(float3(-0.65,0.45,-0.65)))), 12.0);
+    float strip = (1.0-smoothstep(0.07,0.14,abs(r.x-0.48))) *
+                  (1.0-smoothstep(0.55,0.72,abs(r.y))) * smoothstep(-0.15,0.15,-r.z);
+    float horizon = pow(saturate(1.0-abs(r.y+0.28)*5.5), 6.0);
+    float rim = pow(saturate(dot(r,normalize(float3(0.4,0.7,0.3)))), 22.0);
+    return env + key*float3(5.0,4.7,4.3) + strip*float3(3.8,4.5,5.4) +
+           horizon*float3(0.7,0.8,1.1) + rim*float3(1.8,1.25,0.65);
+}
+
+float3 toneMap(float3 x)
+{
+    x = saturate((x*(2.51*x+0.03))/(x*(2.43*x+0.59)+0.14));
+    return pow(x, float3(0.454545,0.454545,0.454545));
+}
+
+float4 PSDefault(VertOut v_in) : TARGET
+{
+    float4 sound = saturate(audio * shape.w);
+    float2 uv = (v_in.uv*2.0-1.0)*2.4;
+    float3 ro = float3(uv.x,-uv.y,-4.0);
+    float3 rd = float3(0.0,0.0,1.0);
+    // Analytic bound before any SDF evaluation. Geometry fits inside radius 2.18.
+    float disc = 2.18*2.18 - dot(ro.xy,ro.xy);
+    if (disc <= 0.0) return float4(0.0,0.0,0.0,0.0);
+    float chord = sqrt(disc);
+    float travel = 4.0-chord;
+    float farTravel = 4.0+chord;
+    float eps = max(0.0008, 1.15/resolution.y);
+    float hit = 0.0;
+    float3 p = ro;
+    for (int i=0; i<112; ++i) {
+        if (float(i) >= steps) break;
+        p = ro+rd*travel;
+        float d = sculpture(p,shape,sound);
+        if (d < eps) { hit=1.0; break; }
+        travel += max(d*0.67,eps*0.25);
+        if (travel > farTravel) break;
+    }
+    if (hit < 0.5) return float4(0.0,0.0,0.0,0.0);
+    float3 n = normalAt(p,eps,shape,sound);
+    float3 fine = cos(p.yzx*17.0+shape.x)*sound.w*0.034;
+    n = normalize(n+fine-n*dot(n,fine));
+    float facing = saturate(dot(n,-rd));
+    float3 r = reflect(rd,n);
+    float optical = (1.0-facing)*7.5 + p.y*0.55 + sound.w*0.2;
+    float3 film = 0.55+0.45*cos(optical+float3(0.0,2.094,4.188));
+    float fresnel = pow(1.0-facing,5.0);
+    float3 conductor = lerp(float3(0.91,0.93,0.97),film,0.30+fresnel*0.24);
+    float3 col = studio(r) * lerp(conductor,float3(1.0,1.0,1.0),fresnel*0.55);
+    col += film*pow(1.0-facing,3.0)*0.13;
+    col = toneMap(col*1.12);
+    float alpha = smoothstep(0.0,0.055,facing);
+    return float4(col*alpha,alpha);
+}
+
+technique Draw {
+    pass {
+        vertex_shader = VSDefault(v_in);
+        pixel_shader = PSDefault(v_in);
+    }
+}

@@ -1,0 +1,66 @@
+name: CHROME MORPH prototype
+on:
+  push:
+    branches: [chrome-morph-prototype-v1]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+concurrency:
+  group: chrome-morph-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: DSP and queue tests (ASan / UBSan)
+        run: |
+          c++ -std=c++20 -O1 -g -Wall -Wextra -Werror -pthread -fsanitize=address,undefined tests/chrome-morph-dsp-test.cpp -o /tmp/chrome-dsp-test
+          /tmp/chrome-dsp-test
+      - name: Install native OBS test dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y libobs-dev libsimde-dev libx11-dev xvfb
+          python -m pip install cmake moderngl numpy pillow
+      - name: Build complete plugin
+        run: |
+          python -m cmake -S . -B /tmp/chrome-build -DCMAKE_BUILD_TYPE=RelWithDebInfo -DENABLE_FRONTEND_API=OFF -DENABLE_QT=OFF
+          python -m cmake --build /tmp/chrome-build --parallel 2
+      - name: Native OBS parser, source, render and alpha
+        run: |
+          c++ -std=c++20 -O2 tests/chrome-morph-obs-test.cpp $(pkg-config --cflags --libs libobs x11) -o /tmp/chrome-obs-test
+          xvfb-run -a /tmp/chrome-obs-test /usr/share/obs/libobs /usr/lib/x86_64-linux-gnu/libobs-opengl.so /tmp/chrome-build/audio-wave.so "$PWD/data" /tmp/chrome-native.rgba
+      - name: Render topology and transparency tests
+        run: python tools/render-chrome-morph.py --output /tmp/chrome-preview
+      - uses: actions/upload-artifact@v4
+        with:
+          name: chrome-morph-visual-tests
+          path: /tmp/chrome-preview/
+
+  windows:
+    runs-on: windows-2022
+    needs: verify
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Windows HLSL shader compilation
+        shell: pwsh
+        run: ./tools/test-chrome-morph-d3d.ps1
+      - name: Build Windows x64 plugin
+        uses: ./.github/actions/build-plugin
+        with:
+          target: x64
+          config: RelWithDebInfo
+      - name: Package Windows x64 plugin
+        uses: ./.github/actions/package-plugin
+        with:
+          target: x64
+          config: RelWithDebInfo
+      - uses: actions/upload-artifact@v4
+        with:
+          name: chrome-morph-windows-x64
+          path: release/*windows-x64*.zip
+          if-no-files-found: error

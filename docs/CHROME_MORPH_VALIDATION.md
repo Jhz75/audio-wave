@@ -21,7 +21,7 @@
 | Chargement du module et compilation du `.effect` **par libobs/OpenGL** | Réussis |
 | Rendu natif dans OBS, lecture RGBA de contrôle | 82 177 pixels opaques et 507 463 transparents dans le snapshot 768² |
 | Type historique Audio Shader Engine encore enregistré | Vérifié |
-| Changement de qualité d’une source active | Vérifié après application différée par OBS |
+| Changement de qualité d’une source active | Vérifié après application différée par OBS ; la zone logique reste 768² |
 | Capture native d’une source OBS synthétique, sélection par UUID | Vérifiée, dernier bloc âgé de 8 ms dans le snapshot de test |
 | Source muette/arrêt de publication et détection de signal périmé | Arrêt de publication vérifié en intégration ; mise en sourdine vérifiée dans les tests DSP |
 | Masquage et destruction | Vérifiés, arrêt propre de la capture et déchargement du module |
@@ -42,6 +42,8 @@ le test natif ci-dessus. Rendu vérifié sur Mesa llvmpipe, en calcul logiciel.
   continue via le même champ de distance.
 - Pixels opaques, transparents et partiellement transparents présents.
 - RGB prémultiplié et zone de bord entièrement transparente vérifiés.
+- Dix-huit états supplémentaires aux trois qualités, deux rotations extrêmes,
+  trois séparations et intensité maximale : absence de découpe aux bords vérifiée.
 - La planche [CHROME_MORPH_preview.png](CHROME_MORPH_preview.png) montre les
   pixels du shader, composés sur un damier ; ce n’est pas une image générée.
 - [CHROME_MORPH_demo.mp4](CHROME_MORPH_demo.mp4) force une séquence de formes pour

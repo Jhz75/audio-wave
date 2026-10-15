@@ -10,6 +10,7 @@
 namespace {
 using namespace chrome_morph;
 constexpr const char *source_id = "chrome_morph_source_v1";
+constexpr uint32_t logical_size = 768;
 struct Source {
 	obs_source_t *self = nullptr;
 	obs_weak_source_t *target = nullptr;
@@ -19,7 +20,7 @@ struct Source {
 	FeatureQueue<> queue;
 	Features features;
 	Motion motion;
-	std::atomic<uint32_t> size{768};
+	uint32_t size = 768;
 	float intensity = 1;
 	int quality = 1;
 	bool demo = false, dirty = true, ready = false;
@@ -103,7 +104,7 @@ void update(void *data, obs_data_t *settings)
 		s->audio_uuid = selected;
 		s->demo = demo;
 		s->quality = std::clamp(int(obs_data_get_int(settings, "quality")), 0, 2);
-		s->size.store(s->quality == 0 ? 576u : s->quality == 1 ? 768u : 1024u);
+		s->size = s->quality == 0 ? 576u : s->quality == 1 ? 768u : 1024u;
 		s->intensity = std::clamp(float(obs_data_get_double(settings, "intensity")), 0.5f, 1.5f);
 		if (reattach) {
 			s->features = {};
@@ -257,7 +258,7 @@ void render(void *data, gs_effect_t *)
 	std::lock_guard<std::mutex> lock(s->state_mutex);
 	if (!prepare(s))
 		return;
-	const uint32_t size = s->size.load();
+	const uint32_t size = s->size;
 	if (s->dirty) {
 		gs_texrender_reset(s->render);
 		if (!gs_texrender_begin(s->render, size, size)) {
@@ -303,7 +304,7 @@ void render(void *data, gs_effect_t *)
 	gs_enable_blending(true);
 	gs_blend_function(GS_BLEND_ONE, GS_BLEND_INVSRCALPHA);
 	while (gs_effect_loop(draw, "Draw"))
-		gs_draw_sprite(texture, 0, size, size);
+		gs_draw_sprite(texture, 0, logical_size, logical_size);
 	gs_blend_state_pop();
 }
 
@@ -386,8 +387,8 @@ extern "C" void register_chrome_morph_source()
 	info.update = update;
 	info.get_defaults = defaults;
 	info.get_properties = properties;
-	info.get_width = [](void *data) {
-		return static_cast<Source *>(data)->size.load();
+	info.get_width = [](void *) {
+		return logical_size;
 	};
 	info.get_height = info.get_width;
 	info.video_render = render;

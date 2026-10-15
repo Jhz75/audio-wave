@@ -87,8 +87,8 @@ int main(int argc, char **argv)
 	obs_data_release(legacy);
 	obs_data_set_int(settings, "quality", 0);
 	obs_source_update(source, settings);
-	os_sleep_ms(80); // Active video-source updates are deferred to OBS' video thread.
-	assert(obs_source_get_width(source) == 576);
+	os_sleep_ms(80);                             // Active video-source updates are deferred to OBS' video thread.
+	assert(obs_source_get_width(source) == 768); // Quality must not change the scene's framing.
 	obs_source_info fake{};
 	fake.id = "chrome_morph_test_audio";
 	fake.type = OBS_SOURCE_TYPE_INPUT;

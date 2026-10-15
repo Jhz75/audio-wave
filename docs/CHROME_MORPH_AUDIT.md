@@ -99,7 +99,9 @@ raymarching SDF s’exécute dans un pixel shader classique.
 À 768², le shader traite 71,6 % de pixels de moins qu’en 1920×1080 ; cela **ne
 signifie pas** une baisse identique du temps GPU. Les rayons hors de la sphère
 englobante sont éliminés avant la boucle. La zone de sortie reste fixe et la
-sculpture est contenue dans cette zone. Déplacer/redimensionner la source dans
+sculpture est contenue dans cette zone. La taille logique déclarée à OBS reste
+768 × 768 dans les trois profils : changer la qualité ne modifie ni le placement
+ni la taille à l’écran. Déplacer/redimensionner la source dans
 OBS détermine son emplacement à l’écran.
 
 Pour Ryzen 9 5900X / RTX 3080 Ti / 32 Go : commencer en Équilibré, intensité 1,
